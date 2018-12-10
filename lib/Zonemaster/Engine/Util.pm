@@ -9,15 +9,17 @@ use version; our $VERSION = version->declare("v1.1.13");
 
 use parent 'Exporter';
 
-use Zonemaster::Engine;
-use Zonemaster::Engine::Profile;
-use Zonemaster::Engine::DNSName;
-use Zonemaster::Engine::Constants qw[:ip];
+use English;
+use File::ShareDir;
 use Pod::Simple::SimpleTree;
+use Zonemaster::Engine::Constants qw[:ip];
+use Zonemaster::Engine::DNSName;
+use Zonemaster::Engine::Profile;
+use Zonemaster::Engine;
 
 ## no critic (Modules::ProhibitAutomaticExportation)
 our @EXPORT      = qw[ ns info name pod_extract_for scramble_case ];
-our @EXPORT_OK   = qw[ ns info name pod_extract_for test_levels should_run_test scramble_case ipversion_ok ];
+our @EXPORT_OK   = qw[ ns info name pod_extract_for test_levels should_run_test scramble_case ipversion_ok dist_file ];
 our %EXPORT_TAGS = ( all => \@EXPORT_OK );
 
 ## no critic (Subroutines::RequireArgUnpacking)
@@ -153,6 +155,26 @@ sub scramble_case {
     return $newstring;
 }    # end sub scramble_case
 
+sub supports_ipv6 {
+    return;
+}
+
+sub dist_file {
+    my ( $dist, $file ) = @_;
+
+    eval { File::ShareDir::dist_dir( $dist ) };
+
+    if ( $EVAL_ERROR ) {
+        my @dirs = File::Spec->splitdir( __FILE__ );
+        my $dev_path = File::Spec->catdir( @dirs[ 0 .. $#dirs - 4 ], 'share', $file );
+        if ( -f $dev_path && -r $dev_path ) {
+            return $dev_path;
+        }
+    }
+
+    return File::ShareDir::dist_file( $dist, $file );
+}
+
 1;
 
 =head1 NAME
@@ -213,5 +235,13 @@ Check if IP version operations are permitted. Tests are done against Zonemaster:
 =item test_levels
 
 WIP, here to please L<Pod::Coverage>.
+
+=item dist_file
+
+A wrapper around L<File::ShareDir/dist_file>.
+
+It takes two arguments: B<$dist> and B<$file>.
+
+The difference from L<File::ShareDir/dist_file> is that it falls back to locating B<$file> within the source repo (that is assumed to be located relative to B<__FILE__>) unless B<$dist> is installed according to L<File::ShareDir/dist_dir>.
 
 =back
