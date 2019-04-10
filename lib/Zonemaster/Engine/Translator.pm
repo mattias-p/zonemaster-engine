@@ -18,7 +18,6 @@ use Moose;
 use MooseX::Singleton;
 
 has 'locale'               => ( is => 'rw', isa => 'Str' );
-has 'data'                 => ( is => 'ro', isa => 'HashRef', lazy => 1, builder => '_load_data' );
 has 'modules'              => ( is => 'ro', isa => 'HashRef', lazy => 1, builder => '_load_modules' );
 has 'all_tag_descriptions' => ( is => 'ro', isa => 'HashRef', builder => '_build_all_tag_descriptions' );
 has '_last_language'       => ( is => 'rw', isa => 'Str', builder => '_build_last_language' );
@@ -165,25 +164,6 @@ sub _load_modules {
     return \%modules;
 }
 
-sub _load_data {
-    my $self = shift;
-
-    my $old_locale = $self->locale;
-
-    $self->locale( 'C' );
-
-    my %data;
-    for my $mod ( keys %{ $self->all_tag_descriptions } ) {
-        for my $tag ( keys %{ $self->all_tag_descriptions->{$mod} } ) {
-            $data{$mod}{$tag} = $self->_translate_tag( $mod, $tag, {} );
-        }
-    }
-
-    $self->locale( $old_locale );
-
-    return \%data;
-}
-
 sub _build_all_tag_descriptions {
     my %all_tag_descriptions;
 
@@ -312,11 +292,6 @@ is returned.
 
 As a side effect when successfully updating this attribute gettext's textdomain
 is reset.
-
-=item data
-
-A reference to a hash with translation data. This is unlikely to be useful to
-end-users.
 
 =item modules
 
