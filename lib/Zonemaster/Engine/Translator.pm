@@ -19,6 +19,7 @@ use MooseX::Singleton;
 
 has 'locale'               => ( is => 'rw', isa => 'Str' );
 has 'data'                 => ( is => 'ro', isa => 'HashRef', lazy => 1, builder => '_load_data' );
+has 'modules'              => ( is => 'ro', isa => 'HashRef', lazy => 1, builder => '_load_modules' );
 has 'all_tag_descriptions' => ( is => 'ro', isa => 'HashRef', builder => '_build_all_tag_descriptions' );
 has '_last_language'       => ( is => 'rw', isa => 'Str', builder => '_build_last_language' );
 
@@ -150,6 +151,18 @@ sub _init_locale {
     }
 
     return $locale;
+}
+
+sub _load_modules {
+    my %modules;
+
+    $modules{SYSTEM} = __PACKAGE__;
+    foreach my $mod ( 'Basic', Zonemaster::Engine->modules ) {
+        my $module = 'Zonemaster::Engine::Test::' . $mod;
+        $modules{ uc( $mod ) } = $module;
+    }
+
+    return \%modules;
 }
 
 sub _load_data {
@@ -304,6 +317,11 @@ is reset.
 
 A reference to a hash with translation data. This is unlikely to be useful to
 end-users.
+
+=item modules
+
+A reference to a hash mapping test module tags to implementation module names.
+This is unlikely to be useful to end-users.
 
 =back
 
