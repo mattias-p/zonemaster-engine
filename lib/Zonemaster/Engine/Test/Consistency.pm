@@ -172,7 +172,7 @@ Readonly my %TAG_DESCRIPTIONS => (
     },
     MULTIPLE_SOA_MNAMES => sub {
         __x    # CONSISTENCY:MULTIPLE_SOA_MNAMES
-          'Saw {count} SOA mname.', @_;
+          'Found {count} SOA mname.', @_;
     },
     MULTIPLE_SOA_RNAMES => sub {
         __x    # CONSISTENCY:MULTIPLE_SOA_RNAMES
@@ -200,7 +200,7 @@ Readonly my %TAG_DESCRIPTIONS => (
     },
     NS_SET => sub {
         __x    # CONSISTENCY:NS_SET
-          'Saw NS set ({nsname_list}) on following nameserver set : {servers}.', @_;
+          'Found NS set ({nsname_list}) on following nameserver set : {servers}.', @_;
     },
     ONE_NS_SET => sub {
         __x    # CONSISTENCY:ONE_NS_SET
@@ -208,7 +208,7 @@ Readonly my %TAG_DESCRIPTIONS => (
     },
     ONE_SOA_MNAME => sub {
         __x    # CONSISTENCY:ONE_SOA_MNAME
-          "A single SOA mname value was seen ({mname}).", @_;
+          "A single SOA mname value was found ({mname}).", @_;
     },
     ONE_SOA_RNAME => sub {
         __x    # CONSISTENCY:ONE_SOA_RNAME
@@ -220,7 +220,7 @@ Readonly my %TAG_DESCRIPTIONS => (
     },
     ONE_SOA_TIME_PARAMETER_SET => sub {
         __x    # CONSISTENCY:ONE_SOA_TIME_PARAMETER_SET
-          'A single SOA time parameter set was seen '
+          'A single SOA time parameter set was found '
           . '(REFRESH={refresh},RETRY={retry},EXPIRE={expire},MINIMUM={minimum}).',
           @_;
     },
@@ -236,7 +236,7 @@ Readonly my %TAG_DESCRIPTIONS => (
     },
     SOA_SERIAL => sub {
         __x    # CONSISTENCY:SOA_SERIAL
-          'Saw SOA serial number {serial} on following nameserver set : {ns_list}.', @_;
+          'Found SOA serial number {serial} on following nameserver set : {ns_list}.', @_;
     },
     SOA_SERIAL_VARIATION => sub {
         __x    # CONSISTENCY:SOA_SERIAL_VARIATION
@@ -245,7 +245,7 @@ Readonly my %TAG_DESCRIPTIONS => (
     },
     SOA_TIME_PARAMETER_SET => sub {
         __x    # CONSISTENCY:SOA_TIME_PARAMETER_SET
-          'Saw SOA time parameter set (REFRESH={refresh}, RETRY={retry}, EXPIRE={expire}, '
+          'Found SOA time parameter set (REFRESH={refresh}, RETRY={retry}, EXPIRE={expire}, '
           . 'MINIMUM={minimum}) on following nameserver set : {ns_list}.', @_;
     },
     TEST_CASE_END => sub {

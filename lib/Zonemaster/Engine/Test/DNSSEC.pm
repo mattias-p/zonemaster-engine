@@ -661,7 +661,7 @@ Readonly my %TAG_DESCRIPTIONS => (
     },
     EXTRA_PROCESSING_BROKEN => sub {
         __x    # DNSSEC:EXTRA_PROCESSING_BROKEN
-          'Server at {server} sent {keys} DNSKEY records, and {sigs} RRSIG records.', @_;
+          'Server at {server} sent {keys} DNSKEY records but {sigs} RRSIG records.', @_;
     },
     EXTRA_PROCESSING_OK => sub {
         __x    # DNSSEC:EXTRA_PROCESSING_OK
