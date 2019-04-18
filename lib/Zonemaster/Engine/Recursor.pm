@@ -5,7 +5,7 @@ use version; our $VERSION = version->declare("v1.0.10");
 use 5.014002;
 use warnings;
 
-use Moose;
+use Class::Accessor "antlers";
 use JSON::PP;
 use Zonemaster::Engine::Util;
 use Zonemaster::Engine::Net::IP;
@@ -306,9 +306,6 @@ sub root_servers {
     return map { Zonemaster::Engine::Util::ns( $_->{name}, $_->{address} ) }
       sort { $a->{name} cmp $b->{name} } @{ $seed_data->{'.'} };
 }
-
-no Moose;
-__PACKAGE__->meta->make_immutable;
 
 1;
 
