@@ -27,7 +27,9 @@ jobs:
         run: sudo apt-get install autoconf automake build-essential cpanminus libclone-perl libdevel-checklib-perl libemail-valid-perl libfile-sharedir-perl libfile-slurp-perl libidn11-dev libintl-perl libio-socket-inet6-perl libjson-pp-perl liblist-moreutils-perl liblocale-msgfmt-perl libmodule-find-perl libmodule-install-xsutil-perl libmoose-perl libmoosex-singleton-perl libnet-ip-perl libpod-coverage-perl libreadonly-xs-perl libssl-dev libtest-differences-perl libtest-exception-perl libtest-fatal-perl libtest-pod-perl libtext-csv-perl libtool m4
 
       - name: Dependencies (CPAN)
-        run: sudo cpanm --verbose --notest Module::Install Test::More
+        run: |
+          sudo cpanm --verbose --notest Module::Install Test::More
+          export PERL5LIB=/usr/local/share/perl/5.26.1
 
       - name: Dependency (Zonemaster::LDNS)
         run: |
