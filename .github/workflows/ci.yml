@@ -1,0 +1,39 @@
+name: CI
+on:
+  push:
+    branches: [ actions-ci ]
+  pull_request:
+    branches: [ actions-ci ]
+
+  # Allows you to run this workflow manually from the Actions tab
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Dependencies (APT)
+        run: sudo apt-get install autoconf automake build-essential cpanminus libclone-perl libdevel-checklib-perl libemail-valid-perl libfile-sharedir-perl libfile-slurp-perl libidn11-dev libintl-perl libio-socket-inet6-perl libjson-pp-perl liblist-moreutils-perl liblocale-msgfmt-perl libmodule-find-perl libmodule-install-xsutil-perl libmoose-perl libmoosex-singleton-perl libnet-ip-perl libpod-coverage-perl libreadonly-xs-perl libssl-dev libtest-differences-perl libtest-exception-perl libtest-fatal-perl libtest-pod-perl libtext-csv-perl libtool m4
+
+      - name: Dependencies (CPAN)
+        run: sudo cpanm --verbose --notest Module::Install Test::More
+
+      - name: Dependency (Zonemaster::LDNS)
+        run: |
+          git clone --depth=1 --branch=develop https://github.com/zonemaster/zonemaster-ldns.git
+          ( cd zonemaster-ldns && sudo cpanm --verbose --notest . ) && sudo rm -rf zonemaster-ldns
+
+      - uses: actions/checkout@v2
+
+      - name: Build
+        run: perl Makefile.PL
+
+      - name: Run all tests (without gettext)
+        run: make test
+
+      - name: Install gettext
+        run: sudo apt-get install gettext
+
+      - name: Re-run gettext-dependent tests
+        run: prove -Ilib --verbose t/po-files.t
