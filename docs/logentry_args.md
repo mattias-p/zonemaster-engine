@@ -17,6 +17,7 @@
 | nsname_list | List of domain names | A list of name servers, as specified by "nsname", separated by ";". |
 | ns_ip_list  | List of IP addresses | A list of name servers, as specified by "ns_ip", separated by ";". |
 | ns_list     | List of domain name and IP address pairs | A list of name servers, as specified by "ns", separated by ";". |
+| rcode       | RCODE                | An RCODE from a DNS packet.                                 |
 | testcase    | A Zonemaster test case, or `all` | A test case identifier.                         |
 || AS number| An Autonomous Space number for an IP address.|
 || Address record type (A or AAAA)| Used to tell the difference between IPv4 and IPv6.|
@@ -57,7 +58,6 @@
 || Number of RRSIG RRs in packet| The number of RRSIG records found in a packet.|
 || Number of SOA RRs in packet| The number of SOA records found in a packet.|
 || Protocol (UDP or TCP)| The protocol used for a query.|
-| rcode (?) | RCODE| An RCODE from a DNS packet.|
 || RFC reference| A reference to an RFC.|
 | rrtype (?) | RR type| The type of RR the message pertains to.|
 || RRSIG Expiration date| The time when a signature expires.|
