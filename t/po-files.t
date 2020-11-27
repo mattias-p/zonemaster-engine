@@ -33,7 +33,12 @@ sub make {
 }
 
 subtest "no fuzzy marks" => sub {
-    my ( $output, $status ) = make "show-fuzzy";
-    is $status, 0,  $makebin . ' show-fuzzy exits with value 0';
-    is $output, "", $makebin . ' show-fuzzy gives empty output';
+    SKIP: {
+        skip 'msgattrib not installed', 2
+          if not `which msgattrib`;
+
+        my ( $output, $status ) = make "show-fuzzy";
+        is $status, 0,  $makebin . ' show-fuzzy exits with value 0';
+        is $output, "", $makebin . ' show-fuzzy gives empty output';
+    };
 };
