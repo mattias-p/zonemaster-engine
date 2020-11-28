@@ -7,6 +7,8 @@
 | algo_descr  | Text                 | The human readable description of a [DNSSEC algorithm].     |
 | algo_mnemo  | Text                 | The mnemonic of a [DNSSEC algorithm].                       |
 | algo_num    | Non-negative integer | The numeric value for a [DNSSEC algorithm].                 |
+| asn         | Non-negative integer | An Autonomous System number.                                |
+| asn_list    | List of non-negative integers | A list of Autonomous System numbers.               |
 | domain      | Domain name          | A domain name. If nsname is also applicable, use that one instead. |
 | keytag      | Non-negative integer | A keytag for a DNSKEY record or a keytag used in a DS or RRSIG record. |
 | module      | A Zonemaster test module, or `all` | The name of a Zonemaster test module.         |
@@ -19,7 +21,6 @@
 | ns_list     | List of domain name and IP address pairs | A list of name servers, as specified by "ns", separated by ";". |
 | rcode       | RCODE                | An RCODE from a DNS packet.                                 |
 | testcase    | A Zonemaster test case, or `all` | A test case identifier.                         |
-|| AS number| An Autonomous Space number for an IP address.|
 || Address record type (A or AAAA)| Used to tell the difference between IPv4 and IPv6.|
 || Count of different SOA RNAMEs.| Total number of different SOA RNAME fields seen.|
 || Count of different SOA serial numbers| Total number of different SOA serial numbers seen.|
@@ -41,7 +42,6 @@
 || IP range| An IP range.|
 || IP reserved range description| A brief description what an IP range is reserved for.|
 || Largest SOA serial number seen| The numerically largest SOA serial value seen.|
-|| List of AS numbers| A list of Autonomous Space numbers.|
 || List of DNSKEY keytags| A list of keytags from DNSKEY records.|
 || List of DS keytags| A list of keytags from DS records.|
 || List of DS/DNSKEY/RRSIG keytags| A list of keytags from DS, DNSKEY or RRSIG records.|
