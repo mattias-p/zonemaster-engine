@@ -1585,7 +1585,7 @@ sub dnssec08 {
         return ( @results, info( TEST_CASE_END => { testcase => (split /::/, (caller(0))[3])[-1] } ) );
     }
 
-    my $ok = 0;
+    my $ok = undef;
     foreach my $sig ( @sigs ) {
         my $msg  = q{};
         my $time = $dnskey_p->timestamp;
@@ -1613,7 +1613,7 @@ sub dnssec08 {
         }
     } ## end foreach my $sig ( @sigs )
 
-    if ( $ok ) {
+    if ( defined $ok ) {
         push @results,
           info(
             DNSKEY_SIGNED => {
@@ -1658,7 +1658,7 @@ sub dnssec09 {
         return ( @results, info( TEST_CASE_END => { testcase => (split /::/, (caller(0))[3])[-1] } ) );
     }
 
-    my $ok = 0;
+    my $ok = undef;
     foreach my $sig ( @sigs ) {
         my $msg  = q{};
         my $time = $soa_p->timestamp;
@@ -1685,7 +1685,7 @@ sub dnssec09 {
         }
     } ## end foreach my $sig ( @sigs )
 
-    if ( $ok ) {
+    if ( defined $ok ) {
         push @results,
           info(
             SOA_SIGNED => {
