@@ -35,11 +35,9 @@ requires 'Readonly'           => 0;
 requires 'Text::CSV'          => 0;
 requires 'Zonemaster::LDNS'   => 2.001;
 
-test_requires 'Pod::Coverage'     => 0;
 test_requires 'Test::Differences' => 0;
 test_requires 'Test::Exception'   => 0;
 test_requires 'Test::Fatal'       => 0;
-test_requires 'Test::Pod'         => 1.22;
 
 # Make all platforms include inc/Module/Install/External.pm
 requires_external_bin 'find';
