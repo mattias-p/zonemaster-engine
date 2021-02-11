@@ -26,8 +26,11 @@ sub add_fake_addresses {
     my ( $self, $domain, $href ) = @_;
 
     foreach my $name ( keys %{$href} ) {
+        my @ips = $href->{$name};
+        $name = lc $name;
+
         push @{ $fake_addresses_cache{$domain}{$name} }, ();
-        foreach my $ip (@{ $href->{$name} }) {
+        foreach my $ip ( @ips ) {
             push @{ $fake_addresses_cache{$domain}{$name} }, $ip;
         }
     }
@@ -331,8 +334,14 @@ Will cache result of previous queries.
 
 =item %fake_addresses_cache
 
-Contains namservers IP addresses which are used in case of fake delegations 
-(pre-publication tests).
+A hash of hashrefs of arrayrefs.
+The keys of the top level hash are domain names.
+The keys of the second level hashes are name server names (normalized to lower
+case).
+The elements of the third level arrayrefs are IP addresses.
+
+The IP addresses are those of the nameservers which are used in case of fake
+delegations (pre-publication tests).
 
 =back
 
