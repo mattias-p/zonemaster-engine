@@ -191,31 +191,31 @@ sub run_all_for {
         return info( NO_NETWORK => {} );
     }
 
-    info( MODULE_VERSION => { module  => 'Zonemaster::Engine::Test::Basic', version => Zonemaster::Engine::Test::Basic->version } );
-    push @results, Zonemaster::Engine::Test::Basic->all( $zone );
-    info( MODULE_END => { module => 'Zonemaster::Engine::Test::Basic' } );
-
-    if ( Zonemaster::Engine::Test::Basic->can_continue( $zone, @results ) and Zonemaster::Engine->can_continue() ) {
+    if ( Zonemaster::Engine->can_continue() ) {
         foreach my $mod ( __PACKAGE__->modules ) {
             my $module = "Zonemaster::Engine::Test::$mod";
+
             info( MODULE_VERSION => { module => $module, version => $module->version } );
-            my @res = eval { $module->all( $zone ) };
+
+            my @module_results = eval { $module->all( $zone ) };
+            push @results, @module_results;
             if ( $@ ) {
                 my $err = $@;
                 if ( blessed $err and $err->isa( 'Zonemaster::Engine::Exception' ) ) {
                     die $err;    # Utility exception, pass it on
                 }
                 else {
-                    push @res, info( MODULE_ERROR => { module => $module, msg => "$err" } );
+                    push @results, info( MODULE_ERROR => { module => $module, msg => "$err" } );
                 }
             }
+
             info( MODULE_END => { module => $module } );
 
-            push @results, @res;
+            if ( $module->can( 'can_continue' ) && !$module->can_continue( $zone, @module_results ) ) {
+                push @results, info( CANNOT_CONTINUE => { domain => $zone->name->string } );
+                last;
+            }
         }
-    }
-    else {
-        push @results, info( CANNOT_CONTINUE => { domain => $zone->name->string } );
     }
 
     return @results;
