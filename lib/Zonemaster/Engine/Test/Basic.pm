@@ -17,7 +17,7 @@ use Zonemaster::Engine::Constants qw[:ip :name];
 use Zonemaster::Engine::Test::Address;
 use Zonemaster::Engine::Test::Syntax;
 use Zonemaster::Engine::TestMethods;
-use Zonemaster::Engine::Util;
+use Zonemaster::Engine::Util qw[info name ns should_run_test];
 
 =head1 NAME
 
@@ -48,26 +48,32 @@ Returns a list of L<Zonemaster::Engine::Logger::Entry> objects.
 
 sub all {
     my ( $class, $zone ) = @_;
+
     my @results;
+    my $ok;
 
     push @results, $class->basic01( $zone );
+    $ok = any { $_->tag eq q{B01_CHILD_FOUND} } @results;
 
-    if ( grep { $_->tag eq q{B01_CHILD_FOUND} } @results ) {
-       push @results, $class->basic02( $zone );
+    if ( !$ok ) {
+        return @results;
     }
 
-    if ( Zonemaster::Engine::Util::should_run_test( q{basic03} ) ) {
+    push @results, $class->basic02( $zone );
+    $ok = any { $_->tag eq q{B02_AUTH_RESPONSE_SOA} } @results;
+
+    if ( should_run_test( q{basic03} ) ) {
         # Perform BASIC3 if BASIC2 failed
-        if ( none { $_->tag eq q{B02_AUTH_RESPONSE_SOA} } @results ) {
-            push @results, $class->basic03( $zone );
-        }
-        else {
+        if ( $ok ) {
             push @results,
               _emit_log(
                 HAS_NAMESERVER_NO_WWW_A_TEST => {
                     zname => $zone->name,
                 }
               );
+        }
+        else {
+            push @results, $class->basic03( $zone );
         }
     }
 
