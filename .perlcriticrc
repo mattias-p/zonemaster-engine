@@ -30,9 +30,6 @@ severity=5
 [Perl::Critic::Policy::Modules::ProhibitEvilModules]
 severity=5
 
-[Perl::Critic::Policy::Subroutines::ProhibitExplicitReturnUndef]
-severity=5
-
 [Perl::Critic::Policy::Subroutines::ProhibitNestedSubs]
 severity=5
 
@@ -162,3 +159,4 @@ severity=4
 [-Perl::Critic::Policy::BuiltinFunctions::ProhibitUniversalCan]
 [-Perl::Critic::Policy::BuiltinFunctions::ProhibitUniversalIsa]
 [-Perl::Critic::Policy::ControlStructures::ProhibitPostfixControls]
+[-Perl::Critic::Policy::Subroutines::ProhibitExplicitReturnUndef]
