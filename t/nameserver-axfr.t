@@ -1,10 +1,9 @@
-use Test::More;
-use Test::Fatal;
-
-use 5.14.2;
 use strict;
 use warnings;
+use 5.14.2;
 
+use Test::More;
+use Test::Fatal;
 BEGIN { use_ok( 'Zonemaster::Engine::Nameserver' ); }
 use Zonemaster::Engine::Util;
 use Zonemaster::LDNS;

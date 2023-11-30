@@ -1,8 +1,10 @@
 package Zonemaster::Engine::Nameserver;
+use strict;
+use warnings;
+use 5.014002;
 
 use version; our $VERSION = version->declare("v1.1.16");
 
-use 5.014002;
 use Class::Accessor qw[ antlers ];
 
 use Zonemaster::Engine::DNSName;
@@ -12,7 +14,6 @@ use Zonemaster::Engine::Nameserver::Cache;
 use Zonemaster::Engine::Recursor;
 use Zonemaster::Engine::Constants qw( :ip :misc );
 use Zonemaster::LDNS;
-
 use Net::IP::XS;
 use Time::HiRes qw[time];
 use JSON::PP;
@@ -367,7 +368,7 @@ sub query {
 
     my $idx = $md5->b64digest();
 
-    my ( $in_cache, $p) = $self->cache->get_key( $idx );
+    ( my $in_cache, $p) = $self->cache->get_key( $idx );
     if ( not $in_cache ) {
         $p = $self->_query( $name, $type, $href );
         $self->cache->set_key( $idx, $p );

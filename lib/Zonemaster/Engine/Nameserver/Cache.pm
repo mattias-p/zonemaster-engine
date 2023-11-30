@@ -1,9 +1,10 @@
 package Zonemaster::Engine::Nameserver::Cache;
+use strict;
+use warnings;
 
 use version; our $VERSION = version->declare("v1.0.4");
 
 use 5.014002;
-use warnings;
 
 use Class::Accessor "antlers";
 

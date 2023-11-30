@@ -1,4 +1,6 @@
 package Zonemaster::Engine;
+use strict;
+use warnings;
 
 use version; our $VERSION = version->declare("v4.7.3");
 

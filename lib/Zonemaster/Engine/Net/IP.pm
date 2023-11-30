@@ -1,9 +1,8 @@
 package Zonemaster::Engine::Net::IP;
-
-use version; our $VERSION = version->declare("v0.0.6");
-
 use strict;
 use warnings;
+
+use version; our $VERSION = version->declare("v0.0.6");
 
 my $p_class = eval {
     require Net::IP::XS;

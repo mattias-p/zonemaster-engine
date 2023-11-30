@@ -1,7 +1,7 @@
-use Test::More;
-
 use strict;
+use warnings;
 use 5.14.2;
+use Test::More;
 
 BEGIN {
     use_ok( q{Zonemaster::Engine} );

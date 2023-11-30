@@ -1,4 +1,7 @@
+use strict;
+use warnings;
 use Test::More;
+
 use Test::Differences;
 use File::Slurp;
 
@@ -7,8 +10,6 @@ use List::MoreUtils qw[uniq none any];
 use Zonemaster::Engine;
 use Zonemaster::Engine::Nameserver;
 use Zonemaster::Engine::Profile;
-
-use strict;
 
 BEGIN {
     use_ok( 'Zonemaster::Engine' );

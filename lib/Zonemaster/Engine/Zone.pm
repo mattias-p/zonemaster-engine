@@ -1,10 +1,10 @@
 package Zonemaster::Engine::Zone;
+use strict;
+use warnings;
 
 use version; our $VERSION = version->declare("v1.1.9");
 
 use 5.014002;
-use strict;
-use warnings;
 
 use Moose;
 use Carp;

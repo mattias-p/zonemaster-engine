@@ -1,7 +1,9 @@
+use strict;
+use warnings;
 use Test::More;
+
 use Test::Fatal;
 use File::Slurp;
-
 use Zonemaster::Engine::Logger::Entry;
 use POSIX qw[setlocale :locale_h];
 

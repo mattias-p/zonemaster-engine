@@ -1,4 +1,6 @@
 package Zonemaster::Engine::NSArray;
+use strict;
+use warnings;
 
 use version; our $VERSION = version->declare("v1.0.3");
 

@@ -1,10 +1,10 @@
 package Zonemaster::Engine::Translator;
+use strict;
+use warnings;
 
 use version; our $VERSION = version->declare("v1.0.8");
 
 use 5.014002;
-use strict;
-use warnings;
 
 use Zonemaster::Engine;
 

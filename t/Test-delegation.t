@@ -1,4 +1,7 @@
+use strict;
+use warnings;
 use Test::More;
+
 use File::Slurp;
 
 use List::MoreUtils qw[uniq none any];

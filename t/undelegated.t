@@ -1,6 +1,7 @@
-use Test::More;
-
+use strict;
+use warnings;
 use 5.12.4;
+use Test::More;
 
 use Zonemaster::Engine;
 use Zonemaster::Engine::Nameserver;

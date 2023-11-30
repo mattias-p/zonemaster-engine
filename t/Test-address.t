@@ -1,6 +1,8 @@
+use strict;
+use warnings;
 use Test::More;
-use File::Slurp;
 
+use File::Slurp;
 use Net::IP::XS;
 
 BEGIN {

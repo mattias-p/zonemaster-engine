@@ -1,7 +1,9 @@
+use strict;
+use warnings;
 use Test::More;
+
 use Test::Differences;
 use File::Slurp;
-
 use List::MoreUtils qw[uniq none any];
 
 BEGIN {
