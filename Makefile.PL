@@ -36,13 +36,15 @@ requires 'Text::CSV'          => 0;
 requires 'YAML::XS'           => 0;
 requires 'Zonemaster::LDNS'   => 3.002000; # For v3.2.0
 
-test_requires 'Locale::PO'        => 0;
-test_requires 'Pod::Coverage'     => 0;
-test_requires 'Test::Differences' => 0;
-test_requires 'Test::Exception'   => 0;
-test_requires 'Test::Fatal'       => 0;
-test_requires 'Test::NoWarnings'  => 0;
-test_requires 'Test::Pod'         => 1.22;
+test_requires 'Locale::PO'                 => 0;
+test_requires 'Perl::Critic'               => 0;
+test_requires 'Perl::Critic::StricterSubs' => 0;
+test_requires 'Pod::Coverage'              => 0;
+test_requires 'Test::Differences'          => 0;
+test_requires 'Test::Exception'            => 0;
+test_requires 'Test::Fatal'                => 0;
+test_requires 'Test::NoWarnings'           => 0;
+test_requires 'Test::Pod'                  => 1.22;
 
 # Make all platforms include inc/Module/Install/External.pm
 requires_external_bin 'find';
