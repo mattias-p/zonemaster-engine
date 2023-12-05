@@ -56,17 +56,19 @@ sub all {
        push @results, $class->basic02( $zone );
     }
 
-    # Perform BASIC3 if BASIC2 failed
-    if ( none { $_->tag eq q{B02_AUTH_RESPONSE_SOA} } @results ) {
-        push @results, $class->basic03( $zone ) if Zonemaster::Engine::Util::should_run_test( q{basic03} );
-    }
-    else {
-        push @results,
-          _emit_log(
-            HAS_NAMESERVER_NO_WWW_A_TEST => {
-                zname => $zone->name,
-            }
-          );
+    if ( Zonemaster::Engine::Util::should_run_test( q{basic03} ) ) {
+        # Perform BASIC3 if BASIC2 failed
+        if ( none { $_->tag eq q{B02_AUTH_RESPONSE_SOA} } @results ) {
+            push @results, $class->basic03( $zone );
+        }
+        else {
+            push @results,
+              _emit_log(
+                HAS_NAMESERVER_NO_WWW_A_TEST => {
+                    zname => $zone->name,
+                }
+              );
+        }
     }
 
     return @results;
