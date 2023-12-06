@@ -33,10 +33,12 @@ Zonemaster::Engine::Test::Basic - Module implementing tests focused on basic zon
 
 =item all()
 
-    my @logentry_array = all( $zone );
+    my @logentries = Zonamester::Engine::Test::Basic->all( $zone );
 
-Runs the default set of tests for that module, i.e. between L<one and four tests|/TESTS> depending on the tested zone.
-If L<BASIC01|/basic01()> passes, L<BASIC02|/basic02()> is run. If L<BASIC02|/basic02()> fails, L<BASIC03|/basic03()> is run.
+Runs the test cases in the Basic test module.
+A test is skipped if it is not included in
+L<Zonemaster::Engine::Profile/"test_cases"> or if a previous test case has found
+a condition that renders it superfluous.
 
 Takes a L<Zonemaster::Engine::Zone> object.
 
@@ -50,17 +52,21 @@ sub all {
     my ( $class, $zone ) = @_;
 
     my @results;
-    my $ok;
+    my $ok = 1;
 
-    push @results, $class->basic01( $zone );
-    $ok = any { $_->tag eq q{B01_CHILD_FOUND} } @results;
+    if ( should_run_test( q{basic01} ) ) {
+        push @results, $class->basic01( $zone );
+        $ok = any { $_->tag eq q{B01_CHILD_FOUND} } @results;
+    }
 
     if ( !$ok ) {
         return @results;
     }
 
-    push @results, $class->basic02( $zone );
-    $ok = any { $_->tag eq q{B02_AUTH_RESPONSE_SOA} } @results;
+    if ( should_run_test( q{basic02} ) ) {
+        push @results, $class->basic02( $zone );
+        $ok = any { $_->tag eq q{B02_AUTH_RESPONSE_SOA} } @results;
+    }
 
     if ( should_run_test( q{basic03} ) ) {
         # Perform BASIC3 if BASIC2 failed
