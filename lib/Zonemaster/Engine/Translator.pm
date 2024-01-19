@@ -95,14 +95,6 @@ Readonly my %TAG_DESCRIPTIONS => (
 
 my $instance;
 
-sub new {
-    my ( $class, %attrs ) = @_;
-
-    $class->initialize( %attrs );
-
-    return $class->instance;
-}
-
 sub instance {
     my ( $class ) = @_;
 
@@ -389,20 +381,10 @@ Returns the single instance of this class.
 If initialize() has not been called prior to the first call to instance(), it
 is the same as if initialize() had been called without arguments.
 
-=item new(%args)
-
-Use of this method is deprecated.
-
-See L<MooseX::Singleton->new|MooseX::Singleton/"Singleton->new">.
-
-=over
-
 =item locale
 
 If no initial value is provided to the constructor, one is determined by calling
 setlocale( LC_MESSAGES, "" ).
-
-=back
 
 =item to_string($entry)
 
