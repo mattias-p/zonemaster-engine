@@ -533,6 +533,13 @@ values).
 This is based on the assumption that F<default.profile> specifies a
 valid value for each and every property.
 
+=head2 test_modules
+
+A hashref mapping test module names to Perl namespaces.
+
+Reports the name and implementation of all registered test modules.
+Every call yields a reference to a new copy.
+
 =head1 CLASS METHODS
 
 =head2 new
@@ -578,6 +585,21 @@ The remaining properties are unset.
 Dies if the given string is illegal according to the L</YAML REPRESENTATION>
 section or if the property values are illegal according to the L</PROFILE
 PROPERTIES> section.
+
+=head2 register_test_module
+
+Register a new test module.
+
+    use My::Custom;
+    Zonemaster::Engine::Profile->register_test_module( 'My::Custom' );
+    Zonemaster::Engine::Profile->effective->merge( Zonemaster::Engine::Profile->default );
+
+Accepts the name of a Perl module that implements the L<Zonemaster::Engine::TestModule::Interface>.
+
+Adds the test module to the L</test_modules> attribute.
+
+N.B. This affects the L</test_cases> property of the L</default> profile but
+does not affect the L</effective> profile.
 
 =head1 INSTANCE METHODS
 
@@ -901,9 +923,7 @@ level for the tag.
 
 =head2 test_cases
 
-An arrayref of names of implemented test cases (in all lower-case) as listed in the
-L<test case specifications|https://github.com/zonemaster/zonemaster/tree/master/docs/specifications/tests/ImplementedTestCases.md>.
-Default is an arrayref listing all the test cases.
+An arrayref of registered test case names.
 
 Specifies which test cases can be run by the test harness.
 
@@ -912,6 +932,9 @@ when running either the full testing suite or just the Basic test module,
 these test cases are always run no matter if they're excluded from this
 property. This is because their primary goal is to verify that the given
 domain name can be tested at all.
+
+Default is the aggregate of the names of all test cases declared by all
+L<registered test modules|/test_modules>.
 
 =head2 test_cases_vars.dnssec04.REMAINING_SHORT
 

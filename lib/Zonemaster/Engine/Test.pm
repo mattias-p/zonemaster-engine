@@ -40,8 +40,11 @@ Zonemaster::Engine::Test - Module implementing methods to find, load and execute
 
 =head1 TEST MODULES
 
-Test modules are defined as modules with names starting with C<Zonemaster::Engine::Test::>.
 Test modules are expected to implement the L<Zonemaster::Engine::TestModuleInterface>.
+
+When this module is loaded it automatically loads and
+L<registers|Zonemaster::Engine::Profile/register_test_module> all the built-in
+test modules.
 
 =cut
 
@@ -93,11 +96,10 @@ sub _log_versions {
 
 =item modules()
 
-    my @modules_array = modules();
+    my @modules_array = Zonemaster::Engine::Test::modules();
 
-Returns a list of strings containing the names of all available Test modules, with the
-exception of L<Zonemaster::Engine::Test::Basic> (since that one is a bit special),
-based on the content of the B<share/modules.txt> file.
+Returns a list of the names of all registered Test modules, with the exception
+of C<Basic> (since that one is a bit special).
 
 =back
 

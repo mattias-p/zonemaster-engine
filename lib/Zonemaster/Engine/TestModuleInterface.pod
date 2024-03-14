@@ -9,8 +9,8 @@ implementing them.
 
 The harness requires that the tests are organized into test modules and further
 into test cases.
-It loads all built-in test modules and exposes APIs to run their constituent
-test cases.
+Out-of-the-box a set of built-in test modules are registered to be used with the
+harness, but you can also register your own custom test modules.
 
 The facilities for implementing DNS tests include APIs to examine a DNS zone, to
 access configuration information on how the tests should be performed and to
@@ -67,7 +67,13 @@ Test Case specifications.
 
 The Zonemaster system provides tooling for rendering message tags to human
 language.
-For this tooling to find the message tags the source code needs to be structured
+
+Human language rendering is only supported for message tags emitted from
+built-in test modules.
+(If you need human language rendering of message tags emitted from custom test
+modules, please let us know.)
+
+For the tooling to find the message tags the source code needs to be structured
 in a certain way.
 Each test module should contain a hash with one entry like this for each
 message tag that should be renderable to human language, where C<MESSAGE_TAG> is
@@ -143,6 +149,9 @@ Returns a hashref mapping message tags to translation function coderefs.
 The hash keys should be a subset of message tags that could be returned by
 L</all()>.
 Message tags omitted from this hash will not be rendered to human language.
+
+Since human language rendering is only supported for built-in test modules,
+custom test modules should just return an empty hashref.
 
 Each translation function accepts a hash of named arguments, namely the
 ones emitted by the test module for the respective message tag.
