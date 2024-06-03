@@ -84,8 +84,8 @@ my %profile_properties_details = (
     q{resolver.source} => {
         type    => q{Str},
         test    => sub {
-            if ( $_[0] ne $RESOLVER_SOURCE_OS_DEFAULT ) {
-                Net::IP::XS->new( $_[0] ) || $log->warning( "Property resolver.source must be an IP address or the exact string $RESOLVER_SOURCE_OS_DEFAULT" );
+            if ( $_[0] ne $RESOLVER_SOURCE_OS_DEFAULT and not Net::IP::XS->new( $_[0] ) ) {
+                die "Property resolver.source must be an IP address or the exact string $RESOLVER_SOURCE_OS_DEFAULT";
             }
         }
     },
@@ -93,18 +93,16 @@ my %profile_properties_details = (
         type    => q{Str},
         test    => sub {
             if ( $_[0] and $_[0] ne '' and not Net::IP::XS::ip_is_ipv4( $_[0] ) ) {
-                $log->warning( "Property resolver.source4 must be an IPv4 address, the empty string or undefined" );
+                die "Property resolver.source4 must be an IPv4 address, the empty string or undefined";
             }
-            Net::IP::XS->new( $_[0] );
         }
     },
     q{resolver.source6} => {
         type    => q{Str},
         test    => sub {
             if ( $_[0] and $_[0] ne '' and not Net::IP::XS::ip_is_ipv6( $_[0] ) ) {
-                $log->warning( "Property resolver.source6 must be an IPv6 address, the empty string or undefined" );
+                die "Property resolver.source6 must be an IPv6 address, the empty string or undefined";
             }
-            Net::IP::XS->new( $_[0] );
         }
     },
     q{net.ipv4} => {

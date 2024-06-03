@@ -1,7 +1,6 @@
-use 5.006;
-use strict;
-use warnings FATAL   => 'all';
-use Test::More tests => 32;
+use v5.16;
+use warnings FATAL => 'all';
+use Test::More;
 use Log::Any::Test;    # Must come before use Log::Any
 
 use JSON::PP;
@@ -10,10 +9,8 @@ use Test::Differences;
 use Test::Exception;
 use Log::Any qw( $log );
 
-BEGIN {
-    use_ok 'Zonemaster::Engine::Profile';
-    use_ok 'Zonemaster::Engine::Constants', qw( $RESOLVER_SOURCE_OS_DEFAULT );
-}
+use Zonemaster::Engine::Profile;
+use Zonemaster::Engine::Constants qw( $RESOLVER_SOURCE_OS_DEFAULT );
 
 # YAML representation of an example profile with all properties set
 Readonly my $EXAMPLE_PROFILE_1_YAML => q(
@@ -321,20 +318,6 @@ subtest 'from_json() dies on illegal values' => sub {
     dies_ok { Zonemaster::Engine::Profile->from_json( '{"cache":[]}' ); }                              "checks type of cache";
 };
 
-subtest 'from_json() emits warning on illegal values' => sub {
-    sub _from_json_illegal_value {
-        my ( $json, $regex, $test_name ) = @_;
-        $log->clear();
-        Zonemaster::Engine::Profile->from_json( $json );
-        $log->contains_ok( $regex, $test_name );
-    }
-    _from_json_illegal_value( '{"resolver":{"source":"example.com"}}',   qr/^Property.*IP address.*/,   "checks type of resolver.source" );
-    _from_json_illegal_value( '{"resolver":{"source4":"example.com"}}',  qr/^Property.*IPv4 address.*/, "checks type of resolver.source4" );
-    _from_json_illegal_value( '{"resolver":{"source4":"2001:db8::42"}}', qr/^Property.*IPv4 address.*/, "checks type of resolver.source4 (only IPv4)" );
-    _from_json_illegal_value( '{"resolver":{"source6":"example.com"}}',  qr/^Property.*IPv6 address.*/, "checks type of resolver.source6" );
-    _from_json_illegal_value( '{"resolver":{"source6":"192.0.2.53"}}',   qr/^Property.*IPv6 address.*/, "checks type of resolver.source6 (only IPv6)" );
-};
-
 subtest 'from_yaml() equals from_json() for a similar profile' => sub {
     my $profile_json = Zonemaster::Engine::Profile->from_json( $EXAMPLE_PROFILE_1 );
     my $profile_yaml = Zonemaster::Engine::Profile->from_yaml( $EXAMPLE_PROFILE_1_YAML );
@@ -575,14 +558,17 @@ subtest 'set() dies on illegal value' => sub {
     dies_ok { $profile->set( 'resolver.defaults.retrans', 0 ); } 'checks lower bound of resolver.defaults.retrans';
     dies_ok { $profile->set( 'resolver.defaults.retrans', 256 ); } 'checks upper bound of resolver.defaults.retrans';
     dies_ok { $profile->set( 'resolver.defaults.retrans', 1.5 ); } 'checks type of resolver.defaults.retrans';
-    dies_ok { $profile->set( 'resolver.source', ['192.0.2.53'] ); } 'checks type of resolver.source';
-    dies_ok { $profile->set( 'resolver.source4', ['192.0.2.53'] ); } 'checks type of resolver.source4';
-    dies_ok { $profile->set( 'resolver.source6', ['2001:db8::42'] ); } 'checks type of resolver.source6';
-    dies_ok { $profile->set( 'asnroots',        ['noreply@example.com'] ); } 'checks type of asnroots';
-    dies_ok { $profile->set( 'logfilter',       [] ); } 'checks type of logfilter';
-    dies_ok { $profile->set( 'test_levels',     [] ); } 'checks type of test_levels';
-    dies_ok { $profile->set( 'test_cases',      {} ); } 'checks type of test_cases';
-    dies_ok { $profile->set( 'cache',           [] ); } 'checks type of cache';
+    dies_ok { $profile->set( 'resolver.source',  'example.com' ); } 'resolver.source rejects domain name string';
+    dies_ok { $profile->set( 'resolver.source',  ['192.0.2.53'] ); } 'resolver.source rejects arrayref';
+    dies_ok { $profile->set( 'resolver.source4', 'example.com' ); } 'resolver.source4 rejects domain name string';
+    dies_ok { $profile->set( 'resolver.source4', ['192.0.2.53'] ); } 'resolver.source4 rejects arrayref';
+    dies_ok { $profile->set( 'resolver.source6', 'example.com' ); } 'resolver.source6 rejects domain name string';
+    dies_ok { $profile->set( 'resolver.source6', ['2001:db8::42'] ); } 'resolver.source6 rejects arrayref';
+    dies_ok { $profile->set( 'asnroots',         ['noreply@example.com'] ); } 'checks type of asnroots';
+    dies_ok { $profile->set( 'logfilter',        [] ); } 'checks type of logfilter';
+    dies_ok { $profile->set( 'test_levels',      [] ); } 'checks type of test_levels';
+    dies_ok { $profile->set( 'test_cases',       {} ); } 'checks type of test_cases';
+    dies_ok { $profile->set( 'cache',            [] ); } 'checks type of cache';
 };
 
 subtest 'set() accepts sentinel values' => sub {
@@ -912,3 +898,5 @@ subtest 'effective() returns the same profile every time' => sub {
 
     is $profile1->get( 'resolver.defaults.retry' ), 222;
 };
+
+done_testing;

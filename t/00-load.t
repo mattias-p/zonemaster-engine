@@ -1,12 +1,11 @@
-use 5.014002;
-use strict;
+use v5.16;
 use warnings FATAL => 'all';
 use Test::More;
 
-plan tests => 1;
-
 BEGIN {
-    use_ok( 'Zonemaster::Engine' ) || print "Bail out!\n";
+    use_ok( 'Zonemaster::Engine' )            || say "Bail out!";
+    use_ok( 'Zonemaster::Engine::Profile' )   || say "Bail out!";
+    use_ok( 'Zonemaster::Engine::Constants' ) || say "Bail out!";
 }
 
 diag( "Testing Zonemaster Engine $Zonemaster::Engine::VERSION, Perl $], $^X" );
