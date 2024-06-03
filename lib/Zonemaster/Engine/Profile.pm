@@ -25,6 +25,7 @@ use Zonemaster::Engine::Constants qw( $RESOLVER_SOURCE_OS_DEFAULT $DURATION_5_MI
 my %profile_properties_details = (
     q{cache} => {
         type    => q{HashRef},
+        default => {},
         test    => sub {
             my @allowed_keys = ( 'redis' );
             foreach my $cache_database ( keys %{$_[0]} ) {
@@ -83,6 +84,7 @@ my %profile_properties_details = (
     },
     q{resolver.source} => {
         type    => q{Str},
+        default => 'os_default',
         test    => sub {
             if ( $_[0] ne $RESOLVER_SOURCE_OS_DEFAULT and not Net::IP::XS->new( $_[0] ) ) {
                 die "Property resolver.source must be an IP address or the exact string $RESOLVER_SOURCE_OS_DEFAULT";
@@ -91,17 +93,19 @@ my %profile_properties_details = (
     },
     q{resolver.source4} => {
         type    => q{Str},
+        default => '',
         test    => sub {
-            if ( $_[0] and $_[0] ne '' and not Net::IP::XS::ip_is_ipv4( $_[0] ) ) {
-                die "Property resolver.source4 must be an IPv4 address, the empty string or undefined";
+            if ( $_[0] ne '' and not Net::IP::XS::ip_is_ipv4( $_[0] ) ) {
+                die "Property resolver.source4 must be an IPv4 address, the empty string";
             }
         }
     },
     q{resolver.source6} => {
         type    => q{Str},
+        default => '',
         test    => sub {
-            if ( $_[0] and $_[0] ne '' and not Net::IP::XS::ip_is_ipv6( $_[0] ) ) {
-                die "Property resolver.source6 must be an IPv6 address, the empty string or undefined";
+            if ( $_[0] ne '' and not Net::IP::XS::ip_is_ipv6( $_[0] ) ) {
+                die "Property resolver.source6 must be an IPv6 address, the empty string";
             }
         }
     },
@@ -116,6 +120,7 @@ my %profile_properties_details = (
     },
     q{asnroots} => {
         type    => q{ArrayRef},
+        default => ["asnlookup.zonemaster.net"],
         test    => sub {
             foreach my $ndd ( @{$_[0]} ) {
                 die "Property asnroots has a NULL item" if not defined $ndd;
@@ -304,6 +309,11 @@ sub default {
     }
     $new->check_validity;
     return $new;
+}
+
+sub all_properties {
+    my ( $class ) = @_;
+    return sort keys %profile_properties_details;
 }
 
 sub check_validity {
@@ -634,6 +644,12 @@ Serialize the profile to the L</JSON REPRESENTATION> format.
 
 Returns a string.
 
+=head2 all_properties
+
+Get the names of all properties.
+
+Returns a sorted list of strings.
+
 =head1 SUBROUTINES
 
 =head2 _get_profile_paths
@@ -718,16 +734,16 @@ Default C<"os_default">.
 
 =head2 resolver.source4
 
-A string that is an IPv4 address or the empty string or undefined.
+A string that is an IPv4 address or the empty string.
 The source address all resolver objects should use when sending queries over IPv4.
-If the empty string or undefined, use the OS default IPv4 address if available.
+If the empty string, use the OS default IPv4 address if available.
 Default "" (empty string).
 
 =head2 resolver.source6
 
-A string that is an IPv6 address or the empty string or undefined.
+A string that is an IPv6 address or the empty string.
 The source address all resolver objects should use when sending queries over IPv6.
-If the empty string or undefined, use the OS default IPv6 address if available.
+If the empty string, use the OS default IPv6 address if available.
 Default "" (empty string).
 
 =head2 net.ipv4
@@ -770,12 +786,9 @@ Default C<"asnlookup.zonemaster.net">.
 =head2 cache (EXPERIMENTAL)
 
 A hash of hashes. The currently supported keys are C<"redis">.
+Default C<{}>.
 
-See more information in L<cache.redis>.
-
-Undefined by default.
-
-=head2 cache.redis (EXPERIMENTAL)
+=head3 redis
 
 A hashref. The currently supported keys are C<"server"> and C<"expire">.
 
