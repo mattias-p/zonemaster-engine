@@ -298,53 +298,33 @@ Returns a list of L<Zonemaster::Engine::Logger::Entry> objects.
 
 sub run_one {
     my ( $class, $requested, $test, $zone ) = @_;
-    my @res;
+
     my ( $module ) = grep { lc( $requested ) eq lc( $_ ) } $class->modules;
 
-    Zonemaster::Engine->start_time_now();
-    push @res, info( START_TIME => { time_t => time(), string => strftime( "%F %T %z", ( localtime() ) ) } );
-    _log_versions();
-
-    if (
-        not(   Zonemaster::Engine::Profile->effective->get( q{net.ipv4} )
-            or Zonemaster::Engine::Profile->effective->get( q{net.ipv6} ) )
-      )
-    {
-        return info( NO_NETWORK => {} );
+    if ( !$module ) {
+        info( UNKNOWN_MODULE =>
+              { module => $requested, testcase => $test, module_list => join( ':', sort $class->modules ) } );
+        return;
     }
 
-    if ( Zonemaster::Engine->can_continue() ) {
-        if ( $module ) {
-            my $m = "Zonemaster::Engine::Test::$module";
-            if ( $m->metadata->{$test} and Zonemaster::Engine::Util::should_run_test( $test ) ) {
-                info( MODULE_VERSION => { module => $m, version => $m->version } );
-                push @res, eval { $m->$test( $zone ) };
-                if ( $@ ) {
-                    my $err = $@;
-                    if ( blessed $err and $err->isa( 'Zonemaster::Engine::Exception' ) ) {
-                        die $err;    # Utility exception, pass it on
-                    }
-                    else {
-                        push @res, info( MODULE_ERROR => { module => $module, msg => "$err" } );
-                    }
-                }
-                info( MODULE_END => { module => $module } );
-                return @res;
-            }
-            else {
-                info( UNKNOWN_METHOD => { module => $m, testcase => $test } );
-            }
-        } ## end if ( $module )
-        else {
-            info( UNKNOWN_MODULE =>
-                  { module => $requested, testcase => $test, module_list => join( ':', sort $class->modules ) } );
-        }
-    } ## end if ( Zonemaster::Engine...)
-    else {
-        info( CANNOT_CONTINUE => { domain => $zone->name->string } );
+    my $m = "Zonemaster::Engine::Test::$module";
+    if ( !$m->metadata->{$test} or !Zonemaster::Engine::Util::should_run_test( $test ) ) {
+        info( UNKNOWN_METHOD => { module => $m, testcase => $test } );
+        return;
     }
 
-    return;
+    my $old_cases = Zonemaster::Engine::Profile->effective->get( 'test_cases' );
+    Zonemaster::Engine::Profile->effective->set( 'test_cases', [$test] );
+
+    my @results;
+    eval { @results = $class->run_all_for( $zone ) };
+    my $err = $@;
+    Zonemaster::Engine::Profile->effective->set( 'test_cases', $old_cases );
+    if ( $err ) {
+        die $err;
+    }
+
+    return @results;
 } ## end sub run_one
 
 1;
