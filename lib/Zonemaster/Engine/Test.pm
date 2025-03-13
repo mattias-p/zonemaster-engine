@@ -8,6 +8,7 @@ use version; our $VERSION = version->declare( "v1.1.12" );
 use Readonly;
 use Module::Find;
 use Net::IP::XS;
+use List::Util qw( none );
 use List::MoreUtils;
 use Clone;
 
@@ -193,8 +194,14 @@ sub run_all_for {
         return @results;
     }
 
+    my %enabled_cases = map { $_ => 1 } @{ Zonemaster::Engine::Profile->effective->get( q{test_cases} ) };
+
     foreach my $mod ( __PACKAGE__->modules ) {
         my $module = "Zonemaster::Engine::Test::$mod";
+
+        if ( none { $enabled_cases{$_} } keys %{ $module->metadata } ) {
+            next;
+        }
 
         info( MODULE_VERSION => { module => $module, version => $module->version } );
 
