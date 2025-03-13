@@ -179,7 +179,6 @@ sub run_all_for {
 
     Zonemaster::Engine->start_time_now();
     push @results, info( START_TIME => { time_t => time(), string => strftime( "%F %T %z", ( localtime() ) ) } );
-    push @results, info( TEST_TARGET => { zone => $zone->name->string, module => 'all' } );
     _log_versions();
 
     if (
@@ -248,7 +247,6 @@ sub run_module {
 
     Zonemaster::Engine->start_time_now();
     push @res, info( START_TIME => { time_t => time(), string => strftime( "%F %T %z", ( localtime() ) ) } );
-    push @res, info( TEST_TARGET => { zone => $zone->name->string, module => $requested } );
     _log_versions();
 
     if (
@@ -316,7 +314,6 @@ sub run_one {
 
     Zonemaster::Engine->start_time_now();
     push @res, info( START_TIME => { time_t => time(), string => strftime( "%F %T %z", ( localtime() ) ) } );
-    push @res, info( TEST_TARGET => { zone => $zone->name->string, module => $requested, testcase => $test } );
     _log_versions();
 
     if (
