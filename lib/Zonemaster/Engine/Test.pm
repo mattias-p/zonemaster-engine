@@ -189,32 +189,34 @@ sub run_all_for {
         return info( NO_NETWORK => {} );
     }
 
-    if ( Zonemaster::Engine->can_continue() ) {
-        foreach my $mod ( __PACKAGE__->modules ) {
-            my $module = "Zonemaster::Engine::Test::$mod";
+    if ( !Zonemaster::Engine->can_continue() ) {
+        return @results;
+    }
 
-            info( MODULE_VERSION => { module => $module, version => $module->version } );
+    foreach my $mod ( __PACKAGE__->modules ) {
+        my $module = "Zonemaster::Engine::Test::$mod";
 
-            my @module_results = eval { $module->all( $zone ) };
-            push @results, @module_results;
-            if ( $@ ) {
-                my $err = $@;
-                if ( blessed $err and $err->isa( 'Zonemaster::Engine::Exception' ) ) {
-                    die $err;    # Utility exception, pass it on
-                }
-                else {
-                    push @results, info( MODULE_ERROR => { module => $module, msg => "$err" } );
-                }
+        info( MODULE_VERSION => { module => $module, version => $module->version } );
+
+        my @module_results = eval { $module->all( $zone ) };
+        push @results, @module_results;
+        if ( $@ ) {
+            my $err = $@;
+            if ( blessed $err and $err->isa( 'Zonemaster::Engine::Exception' ) ) {
+                die $err;    # Utility exception, pass it on
             }
-
-            info( MODULE_END => { module => $module } );
-
-            if ( $module->can( 'can_continue' ) && !$module->can_continue( $zone, @module_results ) ) {
-                push @results, info( CANNOT_CONTINUE => { domain => $zone->name->string } );
-                last;
+            else {
+                push @results, info( MODULE_ERROR => { module => $module, msg => "$err" } );
             }
-        } ## end foreach my $mod ( __PACKAGE__...)
-    } ## end if ( Zonemaster::Engine...)
+        }
+
+        info( MODULE_END => { module => $module } );
+
+        if ( $module->can( 'can_continue' ) && !$module->can_continue( $zone, @module_results ) ) {
+            push @results, info( CANNOT_CONTINUE => { domain => $zone->name->string } );
+            last;
+        }
+    } ## end foreach my $mod ( __PACKAGE__...)
 
     return @results;
 } ## end sub run_all_for
