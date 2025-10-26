@@ -114,8 +114,8 @@ sub test_wants {
     my ( $adapter, $args, $name ) = @_;
 
     my $expect = {
-        want_read  => $args->{read}  ? 1 : 0,
-        want_write => $args->{write} ? 1 : 0,
+        want_read  => $args->{read}  // 0,
+        want_write => $args->{write} // 0,
     };
 
     my $got = {
@@ -308,7 +308,7 @@ subtest 'enqueue queries' => sub {
     $adapter->enqueue( %QUERY_3 );
     $adapter->enqueue( %QUERY_4 );
 
-    test_wants( $adapter, { write => 1 }, 'should want write on single socket for multiple messages' );
+    test_wants( $adapter, { write => 4 }, 'should want write on single socket for multiple messages' );
 };
 
 subtest 'on_writable sends request' => sub {
@@ -318,7 +318,7 @@ subtest 'on_writable sends request' => sub {
     $adapter->on_writable();
 
     $SOCKET->done_ok( 'no more attempt to write after EWOULDBLOCK' );
-    test_wants( $adapter, { write => 1, read => 1 }, 'should still want write, but now also read' );
+    test_wants( $adapter, { write => 3, read => 1 }, 'should still want write, but now also read' );
 };
 
 subtest 'on_writable sends multiple requests' => sub {
@@ -329,7 +329,7 @@ subtest 'on_writable sends multiple requests' => sub {
     $adapter->on_writable();
 
     $SOCKET->done_ok( 'should not attempt to write after sending all requests' );
-    test_wants( $adapter, { read => 1 }, 'should want read, but not write after sending all requests' );
+    test_wants( $adapter, { read => 4 }, 'should want read, but not write after sending all requests' );
 };
 
 subtest 'on_readable handles empty response' => sub {
@@ -339,7 +339,7 @@ subtest 'on_readable handles empty response' => sub {
     my @responses = pairmap { $a => $b->data } $adapter->on_readable();
 
     $SOCKET->done_ok;
-    test_wants( $adapter, { read => 1 }, 'still awaiting responses' );
+    test_wants( $adapter, { read => 4 }, 'still awaiting responses' );
     eq_or_diff \@responses, [], 'no responses were accepted';
 };
 
@@ -350,7 +350,7 @@ subtest 'on_readable handles response with QR=0' => sub {
     my @responses = pairmap { $a => $b->data } $adapter->on_readable();
 
     $SOCKET->done_ok;
-    test_wants( $adapter, { read => 1 }, 'still awaiting responses' );
+    test_wants( $adapter, { read => 4 }, 'still awaiting responses' );
     eq_or_diff \@responses, [], 'no responses were accepted';
 };
 
@@ -361,7 +361,7 @@ subtest 'on_readable handles response with unrecognized QID' => sub {
     my @responses = pairmap { $a => $b->data } $adapter->on_readable();
 
     $SOCKET->done_ok;
-    test_wants( $adapter, { read => 1 }, 'still awaiting responses' );
+    test_wants( $adapter, { read => 4 }, 'still awaiting responses' );
     eq_or_diff \@responses, [], 'no responses were accepted';
 };
 
@@ -372,7 +372,7 @@ subtest 'on_readable handles response with unrecognized QNAME' => sub {
     my @responses = pairmap { $a => $b->data } $adapter->on_readable();
 
     $SOCKET->done_ok;
-    test_wants( $adapter, { read => 1 }, 'still awaiting responses' );
+    test_wants( $adapter, { read => 4 }, 'still awaiting responses' );
     eq_or_diff \@responses, [], 'no responses were accepted';
 };
 
@@ -383,7 +383,7 @@ subtest 'on_readable handles response with unrecognized QTYPE' => sub {
     my @responses = pairmap { $a => $b->data } $adapter->on_readable();
 
     $SOCKET->done_ok;
-    test_wants( $adapter, { read => 1 }, 'still awaiting responses' );
+    test_wants( $adapter, { read => 4 }, 'still awaiting responses' );
     eq_or_diff \@responses, [], 'no responses were accepted';
 };
 
@@ -394,7 +394,7 @@ subtest 'on_readable handles response with unrecognized QCLASS' => sub {
     my @responses = pairmap { $a => $b->data } $adapter->on_readable();
 
     $SOCKET->done_ok;
-    test_wants( $adapter, { read => 1 }, 'still awaiting responses' );
+    test_wants( $adapter, { read => 4 }, 'still awaiting responses' );
     eq_or_diff \@responses, [], 'no responses were accepted';
 };
 
@@ -405,7 +405,7 @@ subtest 'on_readable handles response with unrecognized server' => sub {
     my @responses = pairmap { $a => $b->data } $adapter->on_readable();
 
     $SOCKET->done_ok;
-    test_wants( $adapter, { read => 1 }, 'still awaiting responses' );
+    test_wants( $adapter, { read => 4 }, 'still awaiting responses' );
     eq_or_diff \@responses, [], 'no responses were accepted';
 };
 
@@ -416,7 +416,7 @@ subtest 'on_readable handles responses' => sub {
     my @responses = pairmap { $a => $b->data } $adapter->on_readable();
 
     $SOCKET->done_ok;
-    test_wants( $adapter, { read => 1 }, 'should want to read more responses' );
+    test_wants( $adapter, { read => 3 }, 'should want to read more responses' );
     eq_or_diff \@responses, [ '192.0.2.1', dns_msg( %RESPONSE_1 ) ];
 };
 

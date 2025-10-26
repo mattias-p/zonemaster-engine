@@ -39,13 +39,13 @@ sub enqueue {
 sub want_write {
     my ( $self ) = @_;
 
-    return $self->{pending}->@* ? 1 : 0;
+    return scalar( $self->{pending}->@* ) / 4;
 }
 
 sub want_read {
     my ( $self ) = @_;
 
-    return $self->{active}->%* ? 1 : 0;
+    return scalar map { keys $_->%* } values $self->{active}->%*;
 }
 
 sub on_writable {
