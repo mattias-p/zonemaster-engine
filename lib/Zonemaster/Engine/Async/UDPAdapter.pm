@@ -8,7 +8,7 @@ use IO::Socket;
 
 use Zonemaster::Engine::Async qw( pack_sockaddr unpack_sockaddr );
 
-use constant MAX_UDP_PAYLOAD => 65507;
+use constant MAX_DGRAM => 65535;
 
 sub new {
     my ( $class, $socket ) = @_;
@@ -93,7 +93,7 @@ sub on_readable {
     my @responses;
     while ( $self->{active}->%* ) {
         my $buffer   = '';
-        my $sockaddr = $self->{socket}->recv( \$buffer, MAX_UDP_PAYLOAD );
+        my $sockaddr = $self->{socket}->recv( \$buffer, MAX_DGRAM );
         if ( $sockaddr ) {
             next if length $buffer < 12;
 

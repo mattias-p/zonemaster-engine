@@ -16,7 +16,7 @@ use Zonemaster::Engine::Async qw( pack_sockaddr );
 use Zonemaster::Engine::Async::Query;
 use Zonemaster::Engine::Async::UDPAdapter;
 
-use constant MAX_UDP_PAYLOAD => 65507;
+use constant MAX_DGRAM => 65535;
 
 sub mk_recv_err {
     my ( $errno, $name ) = @_;
@@ -24,7 +24,7 @@ sub mk_recv_err {
     return {
         name   => $name,
         method => 'recv',
-        args   => [ ignore(), MAX_UDP_PAYLOAD ],
+        args   => [ ignore(), MAX_DGRAM ],
         do     => sub { $ERRNO = $errno; undef },
     };
 }
@@ -37,7 +37,7 @@ sub mk_recv_data {
     return {
         name   => $name,
         method => 'recv',
-        args   => [ ignore(), MAX_UDP_PAYLOAD ],
+        args   => [ ignore(), MAX_DGRAM ],
         do     => sub {
             ${ $_[0] } = $message;
             $sockaddr;
@@ -298,6 +298,111 @@ subtest 'on_readable should retry on EINTR' => sub {
     eq_or_diff \@responses, [], 'no responses were accepted';
 };
 
+subtest 'on_readable handles empty response' => sub {
+    my $socket = Mock::Scripted->new;
+    my $sut    = Zonemaster::Engine::Async::UDPAdapter->new( $socket );
+    prep_send( $sut, $socket, %QUERY_1 );
+
+    $socket->expect( mk_recv_data( '192.0.2.4', '', 'ignore empty response' ) );
+    $socket->expect( mk_recv_err( &EWOULDBLOCK, 'nothing more to recv, presently' ) );
+
+    my @responses = pairmap { $a => $b->data } $sut->on_readable();
+
+    $socket->done_ok;
+    test_wants( $sut, { read => 1 }, 'still awaiting responses' );
+    eq_or_diff \@responses, [], 'no responses were accepted';
+};
+
+subtest 'on_readable handles response with QR=0' => sub {
+    my $socket = Mock::Scripted->new;
+    my $sut    = Zonemaster::Engine::Async::UDPAdapter->new( $socket );
+    prep_send( $sut, $socket, %QUERY_1 );
+
+    $socket->expect( mk_recv_ok( { %RESPONSE_4, qr => 0 }, 'ignore response with QR=0' ) );
+    $socket->expect( mk_recv_err( &EWOULDBLOCK, 'nothing more to recv, presently' ) );
+
+    my @responses = pairmap { $a => $b->data } $sut->on_readable();
+
+    $socket->done_ok;
+    test_wants( $sut, { read => 1 }, 'still awaiting responses' );
+    eq_or_diff \@responses, [], 'no responses were accepted';
+};
+
+subtest 'on_readable handles response with deviating QID' => sub {
+    my $socket = Mock::Scripted->new;
+    my $sut    = Zonemaster::Engine::Async::UDPAdapter->new( $socket );
+    prep_send( $sut, $socket, %QUERY_1 );
+
+    $socket->expect( mk_recv_ok( { %RESPONSE_4, qid => 1 }, 'ignore response with deviating QID' ) );
+    $socket->expect( mk_recv_err( &EWOULDBLOCK, 'nothing more to recv, presently' ) );
+
+    my @responses = pairmap { $a => $b->data } $sut->on_readable();
+
+    $socket->done_ok;
+    test_wants( $sut, { read => 1 }, 'still awaiting responses' );
+    eq_or_diff \@responses, [], 'no responses were accepted';
+};
+
+subtest 'on_readable handles response with deviating QNAME' => sub {
+    my $socket = Mock::Scripted->new;
+    my $sut    = Zonemaster::Engine::Async::UDPAdapter->new( $socket );
+    prep_send( $sut, $socket, %QUERY_1 );
+
+    $socket->expect( mk_recv_ok( { %RESPONSE_4, qname => '1.test' }, 'ignore response with deviating QNAME' ) );
+    $socket->expect( mk_recv_err( &EWOULDBLOCK, 'nothing more to recv, presently' ) );
+
+    my @responses = pairmap { $a => $b->data } $sut->on_readable();
+
+    $socket->done_ok;
+    test_wants( $sut, { read => 1 }, 'still awaiting responses' );
+    eq_or_diff \@responses, [], 'no responses were accepted';
+};
+
+subtest 'on_readable handles response with deviating QTYPE' => sub {
+    my $socket = Mock::Scripted->new;
+    my $sut    = Zonemaster::Engine::Async::UDPAdapter->new( $socket );
+    prep_send( $sut, $socket, %QUERY_1 );
+
+    $socket->expect( mk_recv_ok( { %RESPONSE_4, qtype => 'SOA' }, 'ignore response with deviating QTYPE' ) );
+    $socket->expect( mk_recv_err( &EWOULDBLOCK, 'nothing more to recv, presently' ) );
+
+    my @responses = pairmap { $a => $b->data } $sut->on_readable();
+
+    $socket->done_ok;
+    test_wants( $sut, { read => 1 }, 'still awaiting responses' );
+    eq_or_diff \@responses, [], 'no responses were accepted';
+};
+
+subtest 'on_readable handles response with deviating QCLASS' => sub {
+    my $socket = Mock::Scripted->new;
+    my $sut    = Zonemaster::Engine::Async::UDPAdapter->new( $socket );
+    prep_send( $sut, $socket, %QUERY_1 );
+
+    $socket->expect( mk_recv_ok( { %RESPONSE_4, qclass => 'CH' }, 'ignore response with deviating QCLASS' ) );
+    $socket->expect( mk_recv_err( &EWOULDBLOCK, 'nothing more to recv, presently' ) );
+
+    my @responses = pairmap { $a => $b->data } $sut->on_readable();
+
+    $socket->done_ok;
+    test_wants( $sut, { read => 1 }, 'still awaiting responses' );
+    eq_or_diff \@responses, [], 'no responses were accepted';
+};
+
+subtest 'on_readable handles response with deviating server' => sub {
+    my $socket = Mock::Scripted->new;
+    my $sut    = Zonemaster::Engine::Async::UDPAdapter->new( $socket );
+    prep_send( $sut, $socket, %QUERY_1 );
+
+    $socket->expect( mk_recv_ok( { %RESPONSE_4, server => '192.0.2.1' }, 'ignore response with deviating server' ) );
+    $socket->expect( mk_recv_err( &EWOULDBLOCK, 'nothing more to recv, presently' ) );
+
+    my @responses = pairmap { $a => $b->data } $sut->on_readable();
+
+    $socket->done_ok;
+    test_wants( $sut, { read => 1 }, 'still awaiting responses' );
+    eq_or_diff \@responses, [], 'no responses were accepted';
+};
+
 my $SOCKET  = Mock::Scripted->new;
 my $adapter = Zonemaster::Engine::Async::UDPAdapter->new( $SOCKET );
 test_wants( $adapter, {}, 'should not want anything upon construction' );
@@ -330,83 +435,6 @@ subtest 'on_writable sends multiple requests' => sub {
 
     $SOCKET->done_ok( 'should not attempt to write after sending all requests' );
     test_wants( $adapter, { read => 4 }, 'should want read, but not write after sending all requests' );
-};
-
-subtest 'on_readable handles empty response' => sub {
-    $SOCKET->expect( mk_recv_data( '192.0.2.4', '', 'ignore empty response' ) );
-    $SOCKET->expect( mk_recv_err( &EWOULDBLOCK, 'nothing more to recv, presently' ) );
-
-    my @responses = pairmap { $a => $b->data } $adapter->on_readable();
-
-    $SOCKET->done_ok;
-    test_wants( $adapter, { read => 4 }, 'still awaiting responses' );
-    eq_or_diff \@responses, [], 'no responses were accepted';
-};
-
-subtest 'on_readable handles response with QR=0' => sub {
-    $SOCKET->expect( mk_recv_ok( { %RESPONSE_4, qr => 0 }, 'ignore response with QR=0' ) );
-    $SOCKET->expect( mk_recv_err( &EWOULDBLOCK, 'nothing more to recv, presently' ) );
-
-    my @responses = pairmap { $a => $b->data } $adapter->on_readable();
-
-    $SOCKET->done_ok;
-    test_wants( $adapter, { read => 4 }, 'still awaiting responses' );
-    eq_or_diff \@responses, [], 'no responses were accepted';
-};
-
-subtest 'on_readable handles response with unrecognized QID' => sub {
-    $SOCKET->expect( mk_recv_ok( { %RESPONSE_4, qid => 1 }, 'ignore response with unrecognized QID' ) );
-    $SOCKET->expect( mk_recv_err( &EWOULDBLOCK, 'nothing more to recv, presently' ) );
-
-    my @responses = pairmap { $a => $b->data } $adapter->on_readable();
-
-    $SOCKET->done_ok;
-    test_wants( $adapter, { read => 4 }, 'still awaiting responses' );
-    eq_or_diff \@responses, [], 'no responses were accepted';
-};
-
-subtest 'on_readable handles response with unrecognized QNAME' => sub {
-    $SOCKET->expect( mk_recv_ok( { %RESPONSE_4, qname => '1.test' }, 'ignore response with unrecognized QNAME' ) );
-    $SOCKET->expect( mk_recv_err( &EWOULDBLOCK, 'nothing more to recv, presently' ) );
-
-    my @responses = pairmap { $a => $b->data } $adapter->on_readable();
-
-    $SOCKET->done_ok;
-    test_wants( $adapter, { read => 4 }, 'still awaiting responses' );
-    eq_or_diff \@responses, [], 'no responses were accepted';
-};
-
-subtest 'on_readable handles response with unrecognized QTYPE' => sub {
-    $SOCKET->expect( mk_recv_ok( { %RESPONSE_4, qtype => 'SOA' }, 'ignore response with unrecognized QTYPE' ) );
-    $SOCKET->expect( mk_recv_err( &EWOULDBLOCK, 'nothing more to recv, presently' ) );
-
-    my @responses = pairmap { $a => $b->data } $adapter->on_readable();
-
-    $SOCKET->done_ok;
-    test_wants( $adapter, { read => 4 }, 'still awaiting responses' );
-    eq_or_diff \@responses, [], 'no responses were accepted';
-};
-
-subtest 'on_readable handles response with unrecognized QCLASS' => sub {
-    $SOCKET->expect( mk_recv_ok( { %RESPONSE_4, qclass => 'CH' }, 'ignore response with unrecognized QCLASS' ) );
-    $SOCKET->expect( mk_recv_err( &EWOULDBLOCK, 'nothing more to recv, presently' ) );
-
-    my @responses = pairmap { $a => $b->data } $adapter->on_readable();
-
-    $SOCKET->done_ok;
-    test_wants( $adapter, { read => 4 }, 'still awaiting responses' );
-    eq_or_diff \@responses, [], 'no responses were accepted';
-};
-
-subtest 'on_readable handles response with unrecognized server' => sub {
-    $SOCKET->expect( mk_recv_ok( { %RESPONSE_4, server => '192.0.2.1' }, 'ignore response with unrecognized server' ) );
-    $SOCKET->expect( mk_recv_err( &EWOULDBLOCK, 'nothing more to recv, presently' ) );
-
-    my @responses = pairmap { $a => $b->data } $adapter->on_readable();
-
-    $SOCKET->done_ok;
-    test_wants( $adapter, { read => 4 }, 'still awaiting responses' );
-    eq_or_diff \@responses, [], 'no responses were accepted';
 };
 
 subtest 'on_readable handles responses' => sub {
