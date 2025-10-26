@@ -9,7 +9,7 @@ use IO::Socket;
 
 use Zonemaster::Engine::Async qw( pack_sockaddr unpack_sockaddr );
 
-use constant MAX_DGRAM       => 65535;
+use constant MAX_RECV_HINT   => 65535;
 use constant DNS_HEADER_SIZE => 12;
 
 sub new {
@@ -97,7 +97,7 @@ sub on_readable {
     my @responses;
     while ( $self->{active}->%* ) {
         my $buffer   = '';
-        my $sockaddr = $self->{socket}->recv( \$buffer, MAX_DGRAM );
+        my $sockaddr = $self->{socket}->recv( \$buffer, MAX_RECV_HINT );
         if ( !$sockaddr ) {
             next if $!{EINTR};
             last if $!{EAGAIN} || $!{EWOULDBLOCK} || $!{ENOBUFS};

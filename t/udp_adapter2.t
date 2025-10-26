@@ -16,7 +16,7 @@ use Zonemaster::Engine::Async qw( pack_sockaddr );
 use Zonemaster::Engine::Async::Query;
 use Zonemaster::Engine::Async::UDPAdapter;
 
-use constant MAX_DGRAM => 65535;
+use constant MAX_RECV_HINT => 65535;
 
 sub mk_recv_err {
     my ( $errno, $name ) = @_;
@@ -24,7 +24,7 @@ sub mk_recv_err {
     return {
         name   => $name,
         method => 'recv',
-        args   => [ ignore(), MAX_DGRAM ],
+        args   => [ ignore(), MAX_RECV_HINT ],
         do     => sub { $ERRNO = $errno; undef },
     };
 }
@@ -37,7 +37,7 @@ sub mk_recv_data {
     return {
         name   => $name,
         method => 'recv',
-        args   => [ ignore(), MAX_DGRAM ],
+        args   => [ ignore(), MAX_RECV_HINT ],
         do     => sub {
             ${ $_[0] } = $message;
             $sockaddr;
@@ -87,7 +87,7 @@ sub prep_send {
 
     BAIL_OUT( 'prep: socket script not empty' )
       if !$socket->is_exhausted;
-    BAIL_OUT( 'prep: waiting to send' )
+    BAIL_OUT( 'prep: unexpectedly waiting to send' )
       if $sut->want_write;
 
     $sut->enqueue( %query );
@@ -98,7 +98,7 @@ sub prep_send {
       if !$socket->is_exhausted;
     BAIL_OUT( 'prep: not waiting to receive' )
       if !$sut->want_read;
-    BAIL_OUT( 'prep: waiting to send' )
+    BAIL_OUT( 'prep: unexpectedly waiting to send' )
       if $sut->want_write;
 
     return;
@@ -144,10 +144,10 @@ sub get_errno {
     return ( $errno, int( $errno ) );
 }
 
-my %QUERY_1    = ( qid => 1, server => '192.0.2.1', qname => '1.test', qtype => 'SOA',  qclass => 'IN' );
-my %QUERY_2    = ( qid => 2, server => '192.0.2.2', qname => '2.test', qtype => 'NS',   qclass => 'IN' );
-my %QUERY_3    = ( qid => 3, server => '192.0.2.3', qname => '3.test', qtype => 'A',    qclass => 'IN' );
-my %QUERY_4    = ( qid => 4, server => '192.0.2.4', qname => '4.test', qtype => 'AAAA', qclass => 'IN' );
+my %QUERY_1    = ( qid => 1, server => '192.0.2.1',   qname => '1.test', qtype => 'SOA',  qclass => 'IN' );
+my %QUERY_2    = ( qid => 2, server => '192.0.2.2',   qname => '2.test', qtype => 'NS',   qclass => 'IN' );
+my %QUERY_3    = ( qid => 3, server => '192.0.2.3',   qname => '3.test', qtype => 'A',    qclass => 'IN' );
+my %QUERY_4    = ( qid => 4, server => '2001:db8::1', qname => '4.test', qtype => 'AAAA', qclass => 'IN' );
 my %RESPONSE_1 = ( %QUERY_1, qr => 1 );
 my %RESPONSE_2 = ( %QUERY_2, qr => 1 );
 my %RESPONSE_3 = ( %QUERY_3, qr => 1 );
@@ -247,6 +247,7 @@ subtest 'errnos causing on_writable to return' => sub {
 subtest 'errnos causing on_readable to return' => sub {
     my @retry_recv_errnos = qw(
       EAGAIN
+      ENOBUFS
       EWOULDBLOCK
     );
 
@@ -318,9 +319,27 @@ subtest 'on_readable handles unparsable response' => sub {
     my $sut    = Zonemaster::Engine::Async::UDPAdapter->new( $socket );
     prep_send( $sut, $socket, %QUERY_1 );
 
-    my $broken = substr( dns_msg( %RESPONSE_1 ), 0, 13 );
+    my $message = substr( dns_msg( %RESPONSE_1 ), 0, 13 );
 
-    $socket->expect( mk_recv_data( $QUERY_1{server}, $broken, 'ignore unparsable response' ) );
+    $socket->expect( mk_recv_data( $QUERY_1{server}, $message, 'ignore unparsable response' ) );
+    $socket->expect( mk_recv_err( &EWOULDBLOCK, 'nothing more to recv, presently' ) );
+
+    my @responses = pairmap { $a => $b->data } $sut->on_readable();
+
+    $socket->done_ok;
+    test_wants( $sut, { read => 1 }, 'still awaiting responses' );
+    eq_or_diff \@responses, [], 'no responses were accepted';
+};
+
+subtest 'on_readable handles questionless response' => sub {
+    my $socket = Mock::Scripted->new;
+    my $sut    = Zonemaster::Engine::Async::UDPAdapter->new( $socket );
+    prep_send( $sut, $socket, %QUERY_1 );
+
+    my $flags   = 0x8000;                                                        # QR=1
+    my $message = pack( 'n n n n n n', $RESPONSE_1{qid}, $flags, 0, 0, 0, 0 );
+
+    $socket->expect( mk_recv_data( $QUERY_1{server}, $message, 'ignore unparsable response' ) );
     $socket->expect( mk_recv_err( &EWOULDBLOCK, 'nothing more to recv, presently' ) );
 
     my @responses = pairmap { $a => $b->data } $sut->on_readable();
@@ -335,7 +354,7 @@ subtest 'on_readable handles response with QR=0' => sub {
     my $sut    = Zonemaster::Engine::Async::UDPAdapter->new( $socket );
     prep_send( $sut, $socket, %QUERY_1 );
 
-    $socket->expect( mk_recv_ok( { %RESPONSE_4, qr => 0 }, 'ignore response with QR=0' ) );
+    $socket->expect( mk_recv_ok( { %RESPONSE_1, qr => 0 }, 'ignore response with QR=0' ) );
     $socket->expect( mk_recv_err( &EWOULDBLOCK, 'nothing more to recv, presently' ) );
 
     my @responses = pairmap { $a => $b->data } $sut->on_readable();
@@ -350,7 +369,7 @@ subtest 'on_readable handles response with deviating QID' => sub {
     my $sut    = Zonemaster::Engine::Async::UDPAdapter->new( $socket );
     prep_send( $sut, $socket, %QUERY_1 );
 
-    $socket->expect( mk_recv_ok( { %RESPONSE_4, qid => 1 }, 'ignore response with deviating QID' ) );
+    $socket->expect( mk_recv_ok( { %RESPONSE_1, qid => 4 }, 'ignore response with deviating QID' ) );
     $socket->expect( mk_recv_err( &EWOULDBLOCK, 'nothing more to recv, presently' ) );
 
     my @responses = pairmap { $a => $b->data } $sut->on_readable();
@@ -365,7 +384,7 @@ subtest 'on_readable handles response with deviating QNAME' => sub {
     my $sut    = Zonemaster::Engine::Async::UDPAdapter->new( $socket );
     prep_send( $sut, $socket, %QUERY_1 );
 
-    $socket->expect( mk_recv_ok( { %RESPONSE_4, qname => '1.test' }, 'ignore response with deviating QNAME' ) );
+    $socket->expect( mk_recv_ok( { %RESPONSE_1, qname => '4.test' }, 'ignore response with deviating QNAME' ) );
     $socket->expect( mk_recv_err( &EWOULDBLOCK, 'nothing more to recv, presently' ) );
 
     my @responses = pairmap { $a => $b->data } $sut->on_readable();
@@ -380,7 +399,7 @@ subtest 'on_readable handles response with deviating QTYPE' => sub {
     my $sut    = Zonemaster::Engine::Async::UDPAdapter->new( $socket );
     prep_send( $sut, $socket, %QUERY_1 );
 
-    $socket->expect( mk_recv_ok( { %RESPONSE_4, qtype => 'SOA' }, 'ignore response with deviating QTYPE' ) );
+    $socket->expect( mk_recv_ok( { %RESPONSE_1, qtype => 'AAAA' }, 'ignore response with deviating QTYPE' ) );
     $socket->expect( mk_recv_err( &EWOULDBLOCK, 'nothing more to recv, presently' ) );
 
     my @responses = pairmap { $a => $b->data } $sut->on_readable();
@@ -395,7 +414,7 @@ subtest 'on_readable handles response with deviating QCLASS' => sub {
     my $sut    = Zonemaster::Engine::Async::UDPAdapter->new( $socket );
     prep_send( $sut, $socket, %QUERY_1 );
 
-    $socket->expect( mk_recv_ok( { %RESPONSE_4, qclass => 'CH' }, 'ignore response with deviating QCLASS' ) );
+    $socket->expect( mk_recv_ok( { %RESPONSE_1, qclass => 'CH' }, 'ignore response with deviating QCLASS' ) );
     $socket->expect( mk_recv_err( &EWOULDBLOCK, 'nothing more to recv, presently' ) );
 
     my @responses = pairmap { $a => $b->data } $sut->on_readable();
@@ -410,7 +429,8 @@ subtest 'on_readable handles response with deviating server' => sub {
     my $sut    = Zonemaster::Engine::Async::UDPAdapter->new( $socket );
     prep_send( $sut, $socket, %QUERY_1 );
 
-    $socket->expect( mk_recv_ok( { %RESPONSE_4, server => '192.0.2.1' }, 'ignore response with deviating server' ) );
+    $socket->expect(
+        mk_recv_ok( { %RESPONSE_1, server => $QUERY_4{server} }, 'ignore response with deviating server' ) );
     $socket->expect( mk_recv_err( &EWOULDBLOCK, 'nothing more to recv, presently' ) );
 
     my @responses = pairmap { $a => $b->data } $sut->on_readable();
@@ -474,7 +494,7 @@ subtest 'on_readable handles multiple responses' => sub {
 
     $SOCKET->done_ok;
     test_wants( $adapter, { read => 1 }, 'should want to read more responses' );
-    eq_or_diff \@responses, [ '192.0.2.3', dns_msg( %RESPONSE_3 ), '192.0.2.2', dns_msg( %RESPONSE_2 ) ];
+    eq_or_diff \@responses, [ $QUERY_3{server}, dns_msg( %RESPONSE_3 ), $QUERY_2{server}, dns_msg( %RESPONSE_2 ) ];
 };
 
 subtest 'on_readable stops waiting to read after last response' => sub {
@@ -485,7 +505,7 @@ subtest 'on_readable stops waiting to read after last response' => sub {
 
     $SOCKET->done_ok;
     test_wants( $adapter, {}, 'should not want read after receiving all responses' );
-    eq_or_diff \@responses, [ '192.0.2.4', dns_msg( %RESPONSE_4 ) ];
+    eq_or_diff \@responses, [ $QUERY_4{server}, dns_msg( %RESPONSE_4 ) ];
 };
 
 done_testing;
