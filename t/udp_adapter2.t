@@ -3,74 +3,106 @@ use v5.26;
 use warnings;
 use Test::More;
 
+use Carp qw( croak );
 use English;
-use Errno      qw( EINTR EAGAIN EWOULDBLOCK );
+use Errno      qw( EINTR EAGAIN EWOULDBLOCK ENOBUFS EMSGSIZE ENETUNREACH EINVAL ENETDOWN );
 use List::Util qw( pairmap );
 use Mock::Scripted;
 use Test::Differences qw( eq_or_diff );
+use Test::Exception;
+use Test::Deep qw( ignore );
 
+use Zonemaster::Engine::Async qw( pack_sockaddr );
 use Zonemaster::Engine::Async::Query;
 use Zonemaster::Engine::Async::UDPAdapter;
 
-sub expect_recv_errno {
+use constant MAX_UDP_PAYLOAD => 65507;
+
+sub mk_recv_err {
     my ( $errno, $name ) = @_;
 
     return {
         name   => $name,
         method => 'recv',
-        args   => [ \'', 65535 ],
-        do     => sub { $ERRNO = $errno; () },
+        args   => [ ignore(), MAX_UDP_PAYLOAD ],
+        do     => sub { $ERRNO = $errno; undef },
     };
 }
 
-sub expect_recv_response {
+sub mk_recv_data {
     my ( $server, $message, $name ) = @_;
+
+    my $sockaddr = pack_sockaddr( $server, 53 );
 
     return {
         name   => $name,
         method => 'recv',
-        args   => [ \'', 65535 ],
+        args   => [ ignore(), MAX_UDP_PAYLOAD ],
         do     => sub {
-            $_[0]->$* = $message;
-            $server;
+            ${ $_[0] } = $message;
+            $sockaddr;
         },
     };
 }
 
-sub expect_recv_packet {
+sub mk_recv_ok {
     my ( $query, $name ) = @_;
 
     my $server  = $query->{server};
     my $message = dns_msg( $query->%* );
 
-    return expect_recv_response( $server, $message, $name );
+    return mk_recv_data( $server, $message, $name );
 }
 
-sub expect_send_errno {
+sub mk_send_err {
     my ( $query, $errno, $name ) = @_;
 
-    my $server  = $query->{server};
-    my $message = dns_msg( $query->%* );
+    my $message  = dns_msg( $query->%* );
+    my $sockaddr = pack_sockaddr( $query->{server}, 53 );
 
     return {
         name   => $name,
         method => 'send',
-        args   => [ $message, 0, $server ],
-        do     => sub { $ERRNO = $errno; () },
+        args   => [ $message, 0, $sockaddr ],
+        do     => sub { $ERRNO = $errno; undef },
     };
 }
 
-sub expect_send_packet {
+sub mk_send_ok {
     my ( $query, $name ) = @_;
 
-    my $message = dns_msg( $query->%* );
+    my $message  = dns_msg( $query->%* );
+    my $sockaddr = pack_sockaddr( $query->{server}, 53 );
 
     return {
+        name    => $name,
         method  => 'send',
-        args    => [ $message, 0, $query->{server} ],
+        args    => [ $message, 0, $sockaddr ],
         returns => length( $message ),
     };
 }
+
+sub prep_send {
+    my ( $sut, $socket, %query ) = @_;
+
+    BAIL_OUT( 'prep: socket script not empty' )
+      if !$socket->is_exhausted;
+    BAIL_OUT( 'prep: waiting to send' )
+      if $sut->want_write;
+
+    $sut->enqueue( %query );
+    $socket->expect( mk_send_ok( \%query, 'prep: send' ) );
+    $sut->on_writable;
+
+    BAIL_OUT( 'prep: query not sent' )
+      if !$socket->is_exhausted;
+    BAIL_OUT( 'prep: not waiting to receive' )
+      if !$sut->want_read;
+    BAIL_OUT( 'prep: waiting to send' )
+      if $sut->want_write;
+
+    return;
+} ## end sub prep_send
 
 sub dns_msg {
     my ( %args ) = @_;
@@ -78,31 +110,39 @@ sub dns_msg {
     return Zonemaster::Engine::Async::Query->new( %args )->mk_wire( $qid );
 }
 
-my $SOCKET = Mock::Scripted->new;
-
 sub test_wants {
     my ( $adapter, $args, $name ) = @_;
 
     my $expect = {
-        want_read => [
-            $args->{read} ? ( $SOCKET )
-            : ()
-        ],
-        want_write => [
-            $args->{write} ? ( $SOCKET )
-            : ()
-        ],
+        want_read  => $args->{read}  ? 1 : 0,
+        want_write => $args->{write} ? 1 : 0,
     };
 
     my $got = {
-        want_read  => [ $adapter->want_read ],
-        want_write => [ $adapter->want_write ],
+        want_read  => $adapter->want_read,
+        want_write => $adapter->want_write,
     };
 
+    local $Test::Builder::Level = $Test::Builder::Level + 1;
     eq_or_diff( $got, $expect, $name );
 
     return;
-} ## end sub test_wants
+}
+
+sub get_errno {
+    my ( $name ) = @_;
+
+    my $cv = Errno->can( $name );
+    if ( !$cv ) {
+        return ( undef, undef );    # unknown on this OS
+    }
+
+    local $ERRNO;
+    $ERRNO = $cv->();
+    my $errno = $ERRNO;
+
+    return ( $errno, int( $errno ) );
+}
 
 my %QUERY_1    = ( qid => 1, server => '192.0.2.1', qname => '1.test', qtype => 'SOA',  qclass => 'IN' );
 my %QUERY_2    = ( qid => 2, server => '192.0.2.2', qname => '2.test', qtype => 'NS',   qclass => 'IN' );
@@ -113,210 +153,292 @@ my %RESPONSE_2 = ( %QUERY_2, qr => 1 );
 my %RESPONSE_3 = ( %QUERY_3, qr => 1 );
 my %RESPONSE_4 = ( %QUERY_4, qr => 1 );
 
+subtest 'errnos causing on_writable to throw' => sub {
+    my @send_fatal_errnos = qw(
+      EACCES
+      EADDRNOTAVAIL
+      EAFNOSUPPORT
+      EHOSTUNREACH
+      EINVAL
+      EMSGSIZE
+      ENETDOWN
+      ENETUNREACH
+      EPERM
+    );
+
+    for my $mnemonic ( @send_fatal_errnos ) {
+        my ( $errno, $numeric ) = get_errno( $mnemonic );
+
+        subtest $mnemonic => sub {
+            plan skip_all => "$mnemonic not defined on this OS"
+              if !defined $errno;
+
+            my $socket = Mock::Scripted->new;
+            my $sut    = Zonemaster::Engine::Async::UDPAdapter->new( $socket );
+            $sut->enqueue( %QUERY_1 );
+            $socket->expect(
+                mk_send_err( {%QUERY_1}, $errno, "socket should receive send(query 1), returning $mnemonic" ) );
+
+            throws_ok {
+                $sut->on_writable();
+            }
+            qr/\Q($numeric)\E/, "on_writable should throw on $mnemonic";
+            $socket->done_ok( "socket should receive all expected calls" );
+        };
+    } ## end for my $mnemonic ( @send_fatal_errnos)
+};
+
+subtest 'errnos causing on_readable to throw' => sub {
+    my @recv_fatal_errnos = qw(
+      EINVAL
+      ENETDOWN
+      ENETUNREACH
+    );
+
+    for my $mnemonic ( @recv_fatal_errnos ) {
+        my ( $errno, $numeric ) = get_errno( $mnemonic );
+
+        subtest $mnemonic => sub {
+            plan skip_all => "$mnemonic not defined on this OS"
+              if !defined $errno;
+
+            my $socket = Mock::Scripted->new;
+            my $sut    = Zonemaster::Engine::Async::UDPAdapter->new( $socket );
+            prep_send( $sut, $socket, %QUERY_1 );
+
+            $socket->expect( mk_recv_err( $errno, 'attempt to recv' ), );
+            throws_ok {
+                $sut->on_readable();
+            }
+            qr/\Q($numeric)\E/, "$mnemonic is fatal";
+
+            $socket->done_ok( "$mnemonic consumed its scripted call" );
+        };
+    } ## end for my $mnemonic ( @recv_fatal_errnos)
+};
+
+subtest 'errnos causing on_writable to return' => sub {
+    my @retry_send_errnos = qw(
+      EAGAIN
+      ENOBUFS
+      EWOULDBLOCK
+    );
+
+    for my $mnemonic ( @retry_send_errnos ) {
+        my ( $errno ) = get_errno( $mnemonic );
+
+        subtest $mnemonic => sub {
+            plan skip_all => "$mnemonic not defined on this OS"
+              if !defined $errno;
+
+            my $socket = Mock::Scripted->new;
+            my $sut    = Zonemaster::Engine::Async::UDPAdapter->new( $socket );
+            $sut->enqueue( %QUERY_1 );
+            $socket->expect( mk_send_err( {%QUERY_1}, $errno, 'attempt to send query 1' ), );
+
+            $sut->on_writable();
+
+            $socket->done_ok( "no more attempts to send after $mnemonic" );
+            test_wants( $sut, { write => 1 }, 'should still want write' );
+        };
+    }
+};
+
+subtest 'errnos causing on_readable to return' => sub {
+    my @retry_recv_errnos = qw(
+      EAGAIN
+      EWOULDBLOCK
+    );
+
+    for my $mnemonic ( @retry_recv_errnos ) {
+        my ( $errno ) = get_errno( $mnemonic );
+
+        subtest $mnemonic => sub {
+            plan skip_all => "$mnemonic not defined on this OS"
+              if !defined $errno;
+
+            my $socket = Mock::Scripted->new;
+            my $sut    = Zonemaster::Engine::Async::UDPAdapter->new( $socket );
+            prep_send( $sut, $socket, %QUERY_1 );
+
+            $socket->expect( mk_recv_err( $errno, "return on $mnemonic" ) );
+            my @responses = pairmap { $a => $b->data } $sut->on_readable();
+
+            $socket->done_ok( "no more attempts to recv after $mnemonic" );
+            test_wants( $sut, { read => 1 }, 'still awaiting responses' );
+            eq_or_diff \@responses, [], 'no responses were accepted';
+        };
+    }
+};
+
+subtest 'on_writable should retry on EINTR' => sub {
+    my $socket = Mock::Scripted->new;
+    my $sut    = Zonemaster::Engine::Async::UDPAdapter->new( $socket );
+    $sut->enqueue( %QUERY_1 );
+
+    $socket->expect( mk_send_err( {%QUERY_1}, &EINTR,       'attempt to send query 1' ) );
+    $socket->expect( mk_send_err( {%QUERY_1}, &EWOULDBLOCK, 'retry after EINTR' ), );
+    $sut->on_writable();
+
+    $socket->done_ok( 'no more attempts to send after EWOULDBLOCK' );
+    test_wants( $sut, { write => 1 }, 'should still want write' );
+};
+
+subtest 'on_readable should retry on EINTR' => sub {
+    my $socket = Mock::Scripted->new;
+    my $sut    = Zonemaster::Engine::Async::UDPAdapter->new( $socket );
+    prep_send( $sut, $socket, %QUERY_1 );
+
+    $socket->expect( mk_recv_err( &EINTR,       'retry on EINTR' ) );
+    $socket->expect( mk_recv_err( &EWOULDBLOCK, 'nothing more to recv, presently' ) );
+    my @responses = pairmap { $a => $b->data } $sut->on_readable();
+
+    $socket->done_ok;
+    test_wants( $sut, { read => 1 }, 'still awaiting responses' );
+    eq_or_diff \@responses, [], 'no responses were accepted';
+};
+
+my $SOCKET  = Mock::Scripted->new;
 my $adapter = Zonemaster::Engine::Async::UDPAdapter->new( $SOCKET );
 test_wants( $adapter, {}, 'should not want anything upon construction' );
 
 subtest 'enqueue queries' => sub {
-    $adapter->enqueue( %QUERY_1, server => '192.0.2.1' );
-    $adapter->enqueue( %QUERY_2, server => '192.0.2.2' );
-    $adapter->enqueue( %QUERY_3, server => '192.0.2.3' );
-    $adapter->enqueue( %QUERY_4, server => '192.0.2.4' );
+    $adapter->enqueue( %QUERY_1 );
+    $adapter->enqueue( %QUERY_2 );
+    $adapter->enqueue( %QUERY_3 );
+    $adapter->enqueue( %QUERY_4 );
 
     test_wants( $adapter, { write => 1 }, 'should want write on single socket for multiple messages' );
 };
 
-subtest 'on_writable handles EWOULDBLOCK' => sub {
-    $SOCKET->expect_call( expect_send_errno( {%QUERY_1}, &EWOULDBLOCK, 'attempt to send query 1' ), );
-
-    $adapter->on_writable();
-
-    $SOCKET->verify_done( 'no more attempts to send after EWOULDBLOCK' );
-    test_wants( $adapter, { write => 1 }, 'should still want write' );
-};
-
-subtest 'on_writable handles EAGAIN' => sub {
-    $SOCKET->expect_call( expect_send_errno( {%QUERY_1}, &EAGAIN, 'attempt to send query 1' ), );
-
-    $adapter->on_writable();
-
-    $SOCKET->verify_done( 'no more attempts to send after EAGAIN' );
-    test_wants( $adapter, { write => 1 }, 'should still want write' );
-};
-
-subtest 'on_writable handles EINTR' => sub {
-    $SOCKET->expect_call( expect_send_errno( {%QUERY_1}, &EINTR, 'attempt to send query 1' ) )
-      ->expect_call( expect_send_errno( {%QUERY_1}, &EWOULDBLOCK, 'retry after EINTR' ), );
-
-    $adapter->on_writable();
-
-    $SOCKET->verify_done( 'no more attempts to send after EWOULDBLOCK' );
-    test_wants( $adapter, { write => 1 }, 'should still want write' );
-};
-
 subtest 'on_writable sends request' => sub {
-    $SOCKET->expect_call( expect_send_packet( {%QUERY_1}, 'send query 1' ) )
-      ->expect_call( expect_send_errno( {%QUERY_2}, &EWOULDBLOCK, 'attempt to send query 2' ) );
+    $SOCKET->expect( mk_send_ok( {%QUERY_1}, 'send query 1' ) );
+    $SOCKET->expect( mk_send_err( {%QUERY_2}, &EWOULDBLOCK, 'attempt to send query 2' ) );
 
     $adapter->on_writable();
 
-    $SOCKET->verify_done( 'no more attempt to write after EWOULDBLOCK' );
+    $SOCKET->done_ok( 'no more attempt to write after EWOULDBLOCK' );
     test_wants( $adapter, { write => 1, read => 1 }, 'should still want write, but now also read' );
 };
 
 subtest 'on_writable sends multiple requests' => sub {
-    $SOCKET->expect_call( expect_send_packet( {%QUERY_2}, 'send query 2' ) )
-      ->expect_call( expect_send_packet( {%QUERY_3}, 'send query 3' ) )
-      ->expect_call( expect_send_packet( {%QUERY_4}, 'send query 4' ) );
+    $SOCKET->expect( mk_send_ok( {%QUERY_2}, 'send query 2' ) );
+    $SOCKET->expect( mk_send_ok( {%QUERY_3}, 'send query 3' ) );
+    $SOCKET->expect( mk_send_ok( {%QUERY_4}, 'send query 4' ) );
 
     $adapter->on_writable();
 
-    $SOCKET->verify_done( 'should not attempt to write after sending all requests' );
+    $SOCKET->done_ok( 'should not attempt to write after sending all requests' );
     test_wants( $adapter, { read => 1 }, 'should want read, but not write after sending all requests' );
 };
 
-subtest 'on_readable handles EWOULDBLOCK' => sub {
-    $SOCKET->expect_call( expect_recv_errno( &EWOULDBLOCK, 'return on EWOULDBLOCK' ) );
-
-    my @responses = pairmap { $a => $b->data } $adapter->on_readable();
-
-    $SOCKET->verify_done;
-    test_wants( $adapter, { read => 1 }, 'still awaiting responses' );
-    eq_or_diff \@responses, [], 'no responses were accepted';
-};
-
-subtest 'on_readable handles EAGAIN' => sub {
-    $SOCKET->expect_call( expect_recv_errno( &EAGAIN, 'return on EAGAIN' ) );
-
-    my @responses = pairmap { $a => $b->data } $adapter->on_readable();
-
-    $SOCKET->verify_done;
-    test_wants( $adapter, { read => 1 }, 'still awaiting responses' );
-    eq_or_diff \@responses, [], 'no responses were accepted';
-};
-
-subtest 'on_readable handles EINTR' => sub {
-    $SOCKET->expect_call( expect_recv_errno( &EINTR, 'retry on EINTR' ) )
-      ->expect_call( expect_recv_errno( &EWOULDBLOCK, 'nothing more to recv, presently' ) );
-
-    my @responses = pairmap { $a => $b->data } $adapter->on_readable();
-
-    $SOCKET->verify_done;
-    test_wants( $adapter, { read => 1 }, 'still awaiting responses' );
-    eq_or_diff \@responses, [], 'no responses were accepted';
-};
-
 subtest 'on_readable handles empty response' => sub {
-    $SOCKET->expect_call( expect_recv_response( '192.0.2.4', '', 'ignore empty response' ) )
-      ->expect_call( expect_recv_errno( &EWOULDBLOCK, 'nothing more to recv, presently' ) );
+    $SOCKET->expect( mk_recv_data( '192.0.2.4', '', 'ignore empty response' ) );
+    $SOCKET->expect( mk_recv_err( &EWOULDBLOCK, 'nothing more to recv, presently' ) );
 
     my @responses = pairmap { $a => $b->data } $adapter->on_readable();
 
-    $SOCKET->verify_done;
+    $SOCKET->done_ok;
     test_wants( $adapter, { read => 1 }, 'still awaiting responses' );
     eq_or_diff \@responses, [], 'no responses were accepted';
 };
 
 subtest 'on_readable handles response with QR=0' => sub {
-    $SOCKET->expect_call( expect_recv_packet( { %RESPONSE_4 =>, qr => 0 }, 'ignore response with QR=0' ) )
-      ->expect_call( expect_recv_errno( &EWOULDBLOCK, 'nothing more to recv, presently' ) );
+    $SOCKET->expect( mk_recv_ok( { %RESPONSE_4, qr => 0 }, 'ignore response with QR=0' ) );
+    $SOCKET->expect( mk_recv_err( &EWOULDBLOCK, 'nothing more to recv, presently' ) );
 
     my @responses = pairmap { $a => $b->data } $adapter->on_readable();
 
-    $SOCKET->verify_done;
+    $SOCKET->done_ok;
     test_wants( $adapter, { read => 1 }, 'still awaiting responses' );
     eq_or_diff \@responses, [], 'no responses were accepted';
 };
 
 subtest 'on_readable handles response with unrecognized QID' => sub {
-    $SOCKET->expect_call( expect_recv_packet( { %RESPONSE_4, qid => 1 }, 'ignore response with unrecognized QID' ) )
-      ->expect_call( expect_recv_errno( &EWOULDBLOCK, 'nothing more to recv, presently' ) );
+    $SOCKET->expect( mk_recv_ok( { %RESPONSE_4, qid => 1 }, 'ignore response with unrecognized QID' ) );
+    $SOCKET->expect( mk_recv_err( &EWOULDBLOCK, 'nothing more to recv, presently' ) );
 
     my @responses = pairmap { $a => $b->data } $adapter->on_readable();
 
-    $SOCKET->verify_done;
+    $SOCKET->done_ok;
     test_wants( $adapter, { read => 1 }, 'still awaiting responses' );
     eq_or_diff \@responses, [], 'no responses were accepted';
 };
 
 subtest 'on_readable handles response with unrecognized QNAME' => sub {
-    $SOCKET->expect_call(
-        expect_recv_packet( { %RESPONSE_4, qname => '1.test' }, 'ignore response with unrecognized QNAME' ) )
-      ->expect_call( expect_recv_errno( &EWOULDBLOCK, 'nothing more to recv, presently' ) );
+    $SOCKET->expect( mk_recv_ok( { %RESPONSE_4, qname => '1.test' }, 'ignore response with unrecognized QNAME' ) );
+    $SOCKET->expect( mk_recv_err( &EWOULDBLOCK, 'nothing more to recv, presently' ) );
 
     my @responses = pairmap { $a => $b->data } $adapter->on_readable();
 
-    $SOCKET->verify_done;
+    $SOCKET->done_ok;
     test_wants( $adapter, { read => 1 }, 'still awaiting responses' );
     eq_or_diff \@responses, [], 'no responses were accepted';
 };
 
 subtest 'on_readable handles response with unrecognized QTYPE' => sub {
-    $SOCKET->expect_call(
-        expect_recv_packet( { %RESPONSE_4, qtype => 'SOA' }, 'ignore response with unrecognized QTYPE' ) )
-      ->expect_call( expect_recv_errno( &EWOULDBLOCK, 'nothing more to recv, presently' ) );
+    $SOCKET->expect( mk_recv_ok( { %RESPONSE_4, qtype => 'SOA' }, 'ignore response with unrecognized QTYPE' ) );
+    $SOCKET->expect( mk_recv_err( &EWOULDBLOCK, 'nothing more to recv, presently' ) );
 
     my @responses = pairmap { $a => $b->data } $adapter->on_readable();
 
-    $SOCKET->verify_done;
+    $SOCKET->done_ok;
     test_wants( $adapter, { read => 1 }, 'still awaiting responses' );
     eq_or_diff \@responses, [], 'no responses were accepted';
 };
 
 subtest 'on_readable handles response with unrecognized QCLASS' => sub {
-    $SOCKET->expect_call(
-        expect_recv_packet( { %RESPONSE_4, qclass => 'CH' }, 'ignore response with unrecognized QCLASS' ) )
-      ->expect_call( expect_recv_errno( &EWOULDBLOCK, 'nothing more to recv, presently' ) );
+    $SOCKET->expect( mk_recv_ok( { %RESPONSE_4, qclass => 'CH' }, 'ignore response with unrecognized QCLASS' ) );
+    $SOCKET->expect( mk_recv_err( &EWOULDBLOCK, 'nothing more to recv, presently' ) );
 
     my @responses = pairmap { $a => $b->data } $adapter->on_readable();
 
-    $SOCKET->verify_done;
+    $SOCKET->done_ok;
     test_wants( $adapter, { read => 1 }, 'still awaiting responses' );
     eq_or_diff \@responses, [], 'no responses were accepted';
 };
 
 subtest 'on_readable handles response with unrecognized server' => sub {
-    $SOCKET->expect_call(
-        expect_recv_packet( { %RESPONSE_4, server => '192.0.2.1' }, 'ignore response with unrecognized server' ) )
-      ->expect_call( expect_recv_errno( &EWOULDBLOCK, 'nothing more to recv, presently' ) );
+    $SOCKET->expect( mk_recv_ok( { %RESPONSE_4, server => '192.0.2.1' }, 'ignore response with unrecognized server' ) );
+    $SOCKET->expect( mk_recv_err( &EWOULDBLOCK, 'nothing more to recv, presently' ) );
 
     my @responses = pairmap { $a => $b->data } $adapter->on_readable();
 
-    $SOCKET->verify_done;
+    $SOCKET->done_ok;
     test_wants( $adapter, { read => 1 }, 'still awaiting responses' );
     eq_or_diff \@responses, [], 'no responses were accepted';
 };
 
 subtest 'on_readable handles responses' => sub {
-    $SOCKET->expect_call( expect_recv_packet( {%RESPONSE_1}, 'accept one response' ) )
-      ->expect_call( expect_recv_errno( &EWOULDBLOCK, 'return on EWOULDBLOCK' ) );
+    $SOCKET->expect( mk_recv_ok( {%RESPONSE_1}, 'accept one response' ) );
+    $SOCKET->expect( mk_recv_err( &EWOULDBLOCK, 'return on EWOULDBLOCK' ) );
 
     my @responses = pairmap { $a => $b->data } $adapter->on_readable();
 
+    $SOCKET->done_ok;
     test_wants( $adapter, { read => 1 }, 'should want to read more responses' );
     eq_or_diff \@responses, [ '192.0.2.1', dns_msg( %RESPONSE_1 ) ];
 };
 
 subtest 'on_readable handles multiple responses' => sub {
-    $SOCKET->expect_call( expect_recv_packet( {%RESPONSE_3}, 'accept one response' ) )
-      ->expect_call( expect_recv_packet( {%RESPONSE_2}, 'accept another response' ) )
-      ->expect_call( expect_recv_errno( &EWOULDBLOCK, 'return on EWOULDBLOCK' ) );
+    $SOCKET->expect( mk_recv_ok( {%RESPONSE_3}, 'accept one response' ) );
+    $SOCKET->expect( mk_recv_ok( {%RESPONSE_2}, 'accept another response' ) );
+    $SOCKET->expect( mk_recv_err( &EWOULDBLOCK, 'return on EWOULDBLOCK' ) );
 
     my @responses = pairmap { $a => $b->data } $adapter->on_readable();
 
+    $SOCKET->done_ok;
     test_wants( $adapter, { read => 1 }, 'should want to read more responses' );
     eq_or_diff \@responses, [ '192.0.2.3', dns_msg( %RESPONSE_3 ), '192.0.2.2', dns_msg( %RESPONSE_2 ) ];
 };
 
 subtest 'on_readable stops waiting to read after last response' => sub {
-    $SOCKET->expect_call(
-        expect_recv_packet(
-            {%RESPONSE_4}, 'accept response with qr=1 and matching (server, qid, qname, qtype, qclass)'
-        )
-    );
+    $SOCKET->expect(
+        mk_recv_ok( {%RESPONSE_4}, 'accept response with qr=1 and matching (server, qid, qname, qtype, qclass)' ) );
 
     my @responses = pairmap { $a => $b->data } $adapter->on_readable();
 
-    $SOCKET->verify_done;
+    $SOCKET->done_ok;
     test_wants( $adapter, {}, 'should not want read after receiving all responses' );
     eq_or_diff \@responses, [ '192.0.2.4', dns_msg( %RESPONSE_4 ) ];
 };

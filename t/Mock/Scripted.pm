@@ -15,12 +15,12 @@ my $TB = Test::Builder->new;
 
 =head1 NAME
 
-Mock::Scripted - Script exact method-call sequences with argument matching and controlled side effects
+Mock::Scripted - Script exact method-call sequences with argument matching and side-effect hooks
 
 =head1 DESCRIPTION
 
 Mock::Scripted is a minimal, scripted mock.
-You predeclare an script: an sequence of method calls with effects and return values.
+You predeclare a script: a sequence of method calls with effects and return values.
 As the system under test makes the expected calls in the expected order, the effects and
 return values are produced.
 Each matching call is reported as a success to L<Test::Builder>.
@@ -49,16 +49,16 @@ sub new {
     return bless $obj, $class;
 }
 
-=head2 expect_call
+=head2 expect
 
-  $mock->expect_call(\%expectation) -> $mock
+  $mock->expect(\%expectation) -> $mock
 
 Append one expectation to the script. See L</Expectation hash>.
 Unknown keys and type errors are rejected with L<confess|Carp/confess>.
 
 =cut
 
-sub expect_call {
+sub expect {
     my ( $self, $expectation ) = @_;
 
     if ( ref $expectation ne 'HASH' ) {
@@ -95,34 +95,18 @@ sub expect_call {
     push $self->@*, $expectation;
 
     return $self;
-} ## end sub expect_call
+} ## end sub expect
 
-=head2 reset
+=head2 done_ok
 
-  $mock->reset;
-
-Clear the script. No return value.
-
-=cut
-
-sub reset {
-    my ( $self ) = @_;
-
-    $self->@* = ();
-
-    return;
-}
-
-=head2 verify_done
-
-  $mock->verify_done($name?);
+  $mock->done_ok($name?);
 
 Emit an C<ok> via L<Test::Builder> asserting that the script is exhausted.
 On failure it emits diagnostics for each leftover expectation.
 
 =cut
 
-sub verify_done {
+sub done_ok {
     my ( $self, $name ) = @_;
 
     $name //= 'no more calls expected';
@@ -143,7 +127,7 @@ sub verify_done {
     }
 
     return;
-} ## end sub verify_done
+} ## end sub done_ok
 
 =head2 is_exhausted
 
@@ -207,7 +191,7 @@ sub AUTOLOAD {
         local $Data::Dumper::Purity   = 0;
         local $Data::Dumper::Sortkeys = 1;
         local $Data::Dumper::Terse    = 1;
-        $TB->diag( Dumper( \%got, \%exp ) );
+        $TB->diag( Dumper( { got => \%got, expected => \%exp } ) );
         confess "unexpected call to '$got_method'";
     }
 
@@ -246,6 +230,8 @@ Arrayref. The exact argument list. You may include L<Test::Deep> matchers
   do      => sub { ... }  # coderef implementing behavior
 
 =back
+
+N.b., C<do> may modify C<$!> to simulate syscalls.
 
 =head1 SEE ALSO
 
