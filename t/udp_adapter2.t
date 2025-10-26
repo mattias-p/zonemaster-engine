@@ -18,6 +18,7 @@ use Zonemaster::Engine::Async::Query;
 use Zonemaster::Engine::Async::UDPAdapter;
 
 use constant MAX_RECV_HINT => 65535;
+use constant DNS_PORT      => 53;
 
 sub mk_recv_err {
     my ( $errno, $name ) = @_;
@@ -33,7 +34,7 @@ sub mk_recv_err {
 sub mk_recv_data {
     my ( $server, $message, $name ) = @_;
 
-    my $sockaddr = pack_sockaddr( $server, 53 );
+    my $sockaddr = pack_sockaddr( $server, DNS_PORT );
 
     return {
         name   => $name,
@@ -59,7 +60,7 @@ sub mk_send_err {
     my ( $query, $errno, $name ) = @_;
 
     my $message  = dns_msg( $query->%* );
-    my $sockaddr = pack_sockaddr( $query->{server}, 53 );
+    my $sockaddr = pack_sockaddr( $query->{server}, DNS_PORT );
 
     return {
         name   => $name,
@@ -73,7 +74,7 @@ sub mk_send_ok {
     my ( $query, $name ) = @_;
 
     my $message  = dns_msg( $query->%* );
-    my $sockaddr = pack_sockaddr( $query->{server}, 53 );
+    my $sockaddr = pack_sockaddr( $query->{server}, DNS_PORT );
 
     return {
         name    => $name,
@@ -276,6 +277,8 @@ subtest 'on_writable should retry on EINTR' => sub {
     $sut->enqueue( %QUERY_1 );
 
     $socket->expect( mk_send_err( {%QUERY_1}, &EINTR,       'attempt to send query 1' ) );
+    $socket->expect( mk_send_err( {%QUERY_1}, &EINTR,       'retry after EINTR' ) );
+    $socket->expect( mk_send_err( {%QUERY_1}, &EINTR,       'retry after EINTR' ) );
     $socket->expect( mk_send_err( {%QUERY_1}, &EWOULDBLOCK, 'retry after EINTR' ), );
     $sut->on_writable();
 
@@ -288,6 +291,8 @@ subtest 'on_readable should retry on EINTR' => sub {
     my $sut    = Zonemaster::Engine::Async::UDPAdapter->new( $socket );
     prep_send( $sut, $socket, %QUERY_1 );
 
+    $socket->expect( mk_recv_err( &EINTR,       'retry on EINTR' ) );
+    $socket->expect( mk_recv_err( &EINTR,       'retry on EINTR' ) );
     $socket->expect( mk_recv_err( &EINTR,       'retry on EINTR' ) );
     $socket->expect( mk_recv_err( &EWOULDBLOCK, 'nothing more to recv, presently' ) );
     my @responses = pairmap { $a => $b->data } $sut->on_readable();
@@ -319,7 +324,7 @@ subtest 'on_readable rejects unparsable response' => sub {
 
     my $message = substr( dns_msg( %RESPONSE_1 ), 0, 13 );
 
-    $socket->expect( mk_recv_data( $QUERY_1{server}, $message, 'ignore unparsable response' ) );
+    $socket->expect( mk_recv_data( $QUERY_1{server}, $message, 'reject unparsable response' ) );
     $socket->expect( mk_recv_err( &EWOULDBLOCK, 'nothing more to recv, presently' ) );
 
     my @responses = pairmap { $a => $b->data } $sut->on_readable();
@@ -337,7 +342,7 @@ subtest 'on_readable rejects questionless response' => sub {
     my $flags   = 0x8000;                                                        # QR=1
     my $message = pack( 'n n n n n n', $RESPONSE_1{qid}, $flags, 0, 0, 0, 0 );
 
-    $socket->expect( mk_recv_data( $QUERY_1{server}, $message, 'ignore unparsable response' ) );
+    $socket->expect( mk_recv_data( $QUERY_1{server}, $message, 'reject questionless response' ) );
     $socket->expect( mk_recv_err( &EWOULDBLOCK, 'nothing more to recv, presently' ) );
 
     my @responses = pairmap { $a => $b->data } $sut->on_readable();
@@ -449,6 +454,18 @@ subtest 'on_readable accepts case-variant QNAME' => sub {
 
     cmp_ok scalar( @responses ), '==', 2, 'accepted';
     eq_or_diff \@responses, [ $QUERY_1{server}, dns_msg( %RESPONSE_1, qname => '1.TEST' ) ];
+};
+
+subtest 'on_readable accepts TC=1' => sub {
+    my $socket = Mock::Scripted->new;
+    my $sut    = Zonemaster::Engine::Async::UDPAdapter->new( $socket );
+    prep_send( $sut, $socket, %QUERY_1 );
+
+    $socket->expect( mk_recv_ok( { %RESPONSE_1, tc => 1 }, 'truncation' ) );
+    $socket->expect( mk_recv_err( &EWOULDBLOCK, 'drain' ) );
+    my @responses = pairmap { $a => $b->data } $sut->on_readable();
+
+    eq_or_diff \@responses, [ $QUERY_1{server}, dns_msg( %RESPONSE_1, tc => 1 ) ];
 };
 
 my $SOCKET  = Mock::Scripted->new;

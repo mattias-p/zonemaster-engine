@@ -24,6 +24,7 @@ sub new {
         $qclass,
         $rd,
         $qr,
+        $tc,
         $edns_version,
         $edns_udp_size,
         $edns_do,
@@ -38,6 +39,7 @@ sub new {
           qclass
           rd
           qr
+          tc
           edns_version
           edns_udp_size
           edns_do
@@ -63,6 +65,7 @@ sub new {
     $qclass //= 'IN';
     $rd     //= 0;
     $qr     //= 0;
+    $tc     //= 0;
 
     $qclass = uc( $qclass );
     $qtype  = uc( $qtype );
@@ -74,6 +77,7 @@ sub new {
         qclass        => $qclass,
         rd            => $rd,
         qr            => $qr,
+        tc            => $tc,
         edns_version  => $edns_version,
         edns_udp_size => $edns_udp_size,
         edns_do       => $edns_do,
