@@ -64,6 +64,7 @@ sub new {
     $rd     //= 0;
     $qr     //= 0;
 
+    $qname  = lc( $qname );
     $qclass = uc( $qclass );
     $qtype  = uc( $qtype );
 

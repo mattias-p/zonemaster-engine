@@ -4,11 +4,13 @@ use warnings;
 
 use Carp qw( croak );
 use English;
+use Errno qw( EINTR EAGAIN EWOULDBLOCK ENOBUFS EBADMSG );
 use IO::Socket;
 
 use Zonemaster::Engine::Async qw( pack_sockaddr unpack_sockaddr );
 
-use constant MAX_DGRAM => 65535;
+use constant MAX_DGRAM       => 65535;
+use constant DNS_HEADER_SIZE => 12;
 
 sub new {
     my ( $class, $socket ) = @_;
@@ -31,7 +33,13 @@ sub enqueue {
     my ( $question_rr ) = $packet->question();
     my $question        = [ $question_rr->name(), $question_rr->type(), $question_rr->class() ];
 
-    push $self->{pending}->@*, ( $sockaddr, $qid, $question, $packet->data );
+    push $self->{pending}->@*,
+      {
+        sockaddr => $sockaddr,
+        qid      => $qid,
+        question => $question,
+        message  => $packet->data,
+      };
 
     return;
 }
@@ -39,7 +47,7 @@ sub enqueue {
 sub want_write {
     my ( $self ) = @_;
 
-    return scalar( $self->{pending}->@* ) / 4;
+    return scalar( $self->{pending}->@* );
 }
 
 sub want_read {
@@ -54,8 +62,8 @@ sub on_writable {
     my $i = 0;
 
   QUEUE:
-    while ( $i < $self->{pending}->$#* ) {
-        my ( $server, $qid, $question, $message ) = $self->{pending}->@[ $i .. $i + 3 ];
+    while ( $i <= $self->{pending}->$#* ) {
+        my ( $server, $qid, $question, $message ) = $self->{pending}->[$i]->@{qw( sockaddr qid question message )};
 
         my $message_len = length $message;
         local $ERRNO = 0;
@@ -63,26 +71,22 @@ sub on_writable {
             my $sent = $self->{socket}->send( $message, 0, $server );
 
             if ( defined $sent ) {
-                if ( $sent != $message_len ) {
-                    croak sprintf( "sent %d/%d bytes to %s/UDP", $sent, $message_len, $server );
-                }
-
-                my $qid = unpack( 'n', $message );
                 $self->{active}{$server} //= {};
                 $self->{active}{$server}{$qid} = $question;
 
-                $i += 4;
+                $i += 1;
                 next QUEUE;
             }
 
             next       if $!{EINTR};
             last QUEUE if $!{EAGAIN} || $!{EWOULDBLOCK} || $!{ENOBUFS};
-            croak sprintf( "send to %s failed: %s (%d)", $server, $ERRNO, $ERRNO );
-        } ## end for ( ; ; )
+            my ( $port, $ip ) = unpack_sockaddr( $server );
+            croak sprintf( "send to %s failed: %s:%d (%d)", $ip, $port, $ERRNO, $ERRNO );
+        }
 
-    } ## end QUEUE: while ( $i < $self->{pending...})
+    } ## end QUEUE: while ( $i <= $self->{pending...})
 
-    $self->{pending}->@* = $self->{pending}->@[ $i .. $self->{pending}->$#* ];
+    splice $self->{pending}->@*, 0, $i;
 
     return;
 } ## end sub on_writable
@@ -100,7 +104,7 @@ sub on_readable {
             croak sprintf( "recv failed: %s (%d)", $ERRNO, $ERRNO );
         }
 
-        next if length $buffer < 12;
+        next if length $buffer < DNS_HEADER_SIZE;
 
         my $qid      = unpack( 'n', $buffer );
         my $question = exists $self->{active}{$sockaddr} && $self->{active}{$sockaddr}{$qid};
