@@ -94,37 +94,41 @@ sub on_readable {
     while ( $self->{active}->%* ) {
         my $buffer   = '';
         my $sockaddr = $self->{socket}->recv( \$buffer, MAX_DGRAM );
-        if ( $sockaddr ) {
-            next if length $buffer < 12;
+        if ( !$sockaddr ) {
+            next if $!{EINTR};
+            last if $!{EAGAIN} || $!{EWOULDBLOCK} || $!{ENOBUFS};
+            croak sprintf( "recv failed: %s (%d)", $ERRNO, $ERRNO );
+        }
 
-            my $qid      = unpack( 'n', $buffer );
-            my $question = exists $self->{active}{$sockaddr} && $self->{active}{$sockaddr}{$qid};
-            redo if !$question;
+        next if length $buffer < 12;
 
-            my $packet = Zonemaster::LDNS::Packet->new_from_wireformat2( $buffer );
-            redo if !$packet->qr();
-            my ( $qname, $qtype, $qclass ) = $question->@*;
+        my $qid      = unpack( 'n', $buffer );
+        my $question = exists $self->{active}{$sockaddr} && $self->{active}{$sockaddr}{$qid};
+        redo if !$question;
 
-            my ( $question_rr ) = $packet->question();
-            redo if !$question_rr;
-            redo if $question_rr->type() ne $qtype;
-            redo if $question_rr->class() ne $qclass;
-            redo if $question_rr->name() ne $qname;
+        my $packet = Zonemaster::LDNS::Packet->new_from_wireformat2( $buffer );
+        if ( !defined $packet ) {
+            redo if $!{EBADMSG};
+            croak sprintf( "parse failed: %s (%d)", $ERRNO, $ERRNO );
+        }
 
-            my ( $port, $ip ) = unpack_sockaddr( $sockaddr );
+        redo if !$packet->qr();
+        my ( $qname, $qtype, $qclass ) = $question->@*;
 
-            push @responses, $ip, $packet;
+        my ( $question_rr ) = $packet->question();
+        redo if !$question_rr;
+        redo if $question_rr->type() ne $qtype;
+        redo if $question_rr->class() ne $qclass;
+        redo if $question_rr->name() ne $qname;
 
-            delete $self->{active}{$sockaddr}{$qid};
-            if ( !$self->{active}{$sockaddr}->%* ) {
-                delete $self->{active}{$sockaddr};
-            }
+        my ( $port, $ip ) = unpack_sockaddr( $sockaddr );
 
-            next;
-        } ## end if ( $sockaddr )
-        next if $!{EINTR};
-        last if $!{EAGAIN} || $!{EWOULDBLOCK} || $!{ENOBUFS};
-        croak sprintf( "recv failed: %s (%d)", $ERRNO, $ERRNO );
+        push @responses, $ip, $packet;
+
+        delete $self->{active}{$sockaddr}{$qid};
+        if ( !$self->{active}{$sockaddr}->%* ) {
+            delete $self->{active}{$sockaddr};
+        }
     } ## end while ( $self->{active}->...)
 
     return @responses;

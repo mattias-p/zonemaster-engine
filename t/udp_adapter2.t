@@ -153,6 +153,8 @@ my %RESPONSE_2 = ( %QUERY_2, qr => 1 );
 my %RESPONSE_3 = ( %QUERY_3, qr => 1 );
 my %RESPONSE_4 = ( %QUERY_4, qr => 1 );
 
+=pod
+
 subtest 'errnos causing on_writable to throw' => sub {
     my @send_fatal_errnos = qw(
       EACCES
@@ -303,7 +305,7 @@ subtest 'on_readable handles empty response' => sub {
     my $sut    = Zonemaster::Engine::Async::UDPAdapter->new( $socket );
     prep_send( $sut, $socket, %QUERY_1 );
 
-    $socket->expect( mk_recv_data( '192.0.2.4', '', 'ignore empty response' ) );
+    $socket->expect( mk_recv_data( $QUERY_1{server}, '', 'ignore empty response' ) );
     $socket->expect( mk_recv_err( &EWOULDBLOCK, 'nothing more to recv, presently' ) );
 
     my @responses = pairmap { $a => $b->data } $sut->on_readable();
@@ -312,6 +314,27 @@ subtest 'on_readable handles empty response' => sub {
     test_wants( $sut, { read => 1 }, 'still awaiting responses' );
     eq_or_diff \@responses, [], 'no responses were accepted';
 };
+
+=cut
+
+subtest 'on_readable handles unparsable response' => sub {
+    my $socket = Mock::Scripted->new;
+    my $sut    = Zonemaster::Engine::Async::UDPAdapter->new( $socket );
+    prep_send( $sut, $socket, %QUERY_1 );
+
+    my $broken = substr( dns_msg( %RESPONSE_1 ), 0, 13 );
+
+    $socket->expect( mk_recv_data( $QUERY_1{server}, $broken, 'ignore unparsable response' ) );
+    $socket->expect( mk_recv_err( &EWOULDBLOCK, 'nothing more to recv, presently' ) );
+
+    my @responses = pairmap { $a => $b->data } $sut->on_readable();
+
+    $socket->done_ok;
+    test_wants( $sut, { read => 1 }, 'still awaiting responses' );
+    eq_or_diff \@responses, [], 'no responses were accepted';
+};
+
+=pod
 
 subtest 'on_readable handles response with QR=0' => sub {
     my $socket = Mock::Scripted->new;
@@ -445,7 +468,7 @@ subtest 'on_readable handles responses' => sub {
 
     $SOCKET->done_ok;
     test_wants( $adapter, { read => 3 }, 'should want to read more responses' );
-    eq_or_diff \@responses, [ '192.0.2.1', dns_msg( %RESPONSE_1 ) ];
+    eq_or_diff \@responses, [ $QUERY_1{server}, dns_msg( %RESPONSE_1 ) ];
 };
 
 subtest 'on_readable handles multiple responses' => sub {
@@ -470,5 +493,7 @@ subtest 'on_readable stops waiting to read after last response' => sub {
     test_wants( $adapter, {}, 'should not want read after receiving all responses' );
     eq_or_diff \@responses, [ '192.0.2.4', dns_msg( %RESPONSE_4 ) ];
 };
+
+=cut
 
 done_testing;
