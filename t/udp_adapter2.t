@@ -2,15 +2,16 @@
 use v5.26;
 use warnings;
 use Test::More;
+use Test::NoWarnings 'had_no_warnings';
 
 use Carp qw( croak );
 use English;
 use Errno      qw( EINTR EAGAIN EWOULDBLOCK ENOBUFS EMSGSIZE ENETUNREACH EINVAL ENETDOWN );
 use List::Util qw( pairmap );
 use Mock::Scripted;
+use Test::Deep        qw( ignore );
 use Test::Differences qw( eq_or_diff );
 use Test::Exception;
-use Test::Deep qw( ignore );
 
 use Zonemaster::Engine::Async qw( pack_sockaddr );
 use Zonemaster::Engine::Async::Query;
@@ -137,11 +138,8 @@ sub get_errno {
         return ( undef, undef );    # unknown on this OS
     }
 
-    local $ERRNO;
-    $ERRNO = $cv->();
-    my $errno = $ERRNO;
-
-    return ( $errno, int( $errno ) );
+    my $errno = $cv->();
+    return ( $errno, 0+ $errno );
 }
 
 my %QUERY_1    = ( qid => 1, server => '192.0.2.1',   qname => '1.test', qtype => 'SOA',  qclass => 'IN' );
@@ -299,7 +297,7 @@ subtest 'on_readable should retry on EINTR' => sub {
     eq_or_diff \@responses, [], 'no responses were accepted';
 };
 
-subtest 'on_readable handles empty response' => sub {
+subtest 'on_readable rejects empty response' => sub {
     my $socket = Mock::Scripted->new;
     my $sut    = Zonemaster::Engine::Async::UDPAdapter->new( $socket );
     prep_send( $sut, $socket, %QUERY_1 );
@@ -314,7 +312,7 @@ subtest 'on_readable handles empty response' => sub {
     eq_or_diff \@responses, [], 'no responses were accepted';
 };
 
-subtest 'on_readable handles unparsable response' => sub {
+subtest 'on_readable rejects unparsable response' => sub {
     my $socket = Mock::Scripted->new;
     my $sut    = Zonemaster::Engine::Async::UDPAdapter->new( $socket );
     prep_send( $sut, $socket, %QUERY_1 );
@@ -331,7 +329,7 @@ subtest 'on_readable handles unparsable response' => sub {
     eq_or_diff \@responses, [], 'no responses were accepted';
 };
 
-subtest 'on_readable handles questionless response' => sub {
+subtest 'on_readable rejects questionless response' => sub {
     my $socket = Mock::Scripted->new;
     my $sut    = Zonemaster::Engine::Async::UDPAdapter->new( $socket );
     prep_send( $sut, $socket, %QUERY_1 );
@@ -349,7 +347,7 @@ subtest 'on_readable handles questionless response' => sub {
     eq_or_diff \@responses, [], 'no responses were accepted';
 };
 
-subtest 'on_readable handles response with QR=0' => sub {
+subtest 'on_readable rejects response with QR=0' => sub {
     my $socket = Mock::Scripted->new;
     my $sut    = Zonemaster::Engine::Async::UDPAdapter->new( $socket );
     prep_send( $sut, $socket, %QUERY_1 );
@@ -364,7 +362,7 @@ subtest 'on_readable handles response with QR=0' => sub {
     eq_or_diff \@responses, [], 'no responses were accepted';
 };
 
-subtest 'on_readable handles response with deviating QID' => sub {
+subtest 'on_readable rejects response with deviating QID' => sub {
     my $socket = Mock::Scripted->new;
     my $sut    = Zonemaster::Engine::Async::UDPAdapter->new( $socket );
     prep_send( $sut, $socket, %QUERY_1 );
@@ -379,7 +377,7 @@ subtest 'on_readable handles response with deviating QID' => sub {
     eq_or_diff \@responses, [], 'no responses were accepted';
 };
 
-subtest 'on_readable handles response with deviating QNAME' => sub {
+subtest 'on_readable rejects mismatched QNAME after matched QID' => sub {
     my $socket = Mock::Scripted->new;
     my $sut    = Zonemaster::Engine::Async::UDPAdapter->new( $socket );
     prep_send( $sut, $socket, %QUERY_1 );
@@ -394,7 +392,7 @@ subtest 'on_readable handles response with deviating QNAME' => sub {
     eq_or_diff \@responses, [], 'no responses were accepted';
 };
 
-subtest 'on_readable handles response with deviating QTYPE' => sub {
+subtest 'on_readable rejects mismatched QTYPE after matched QID' => sub {
     my $socket = Mock::Scripted->new;
     my $sut    = Zonemaster::Engine::Async::UDPAdapter->new( $socket );
     prep_send( $sut, $socket, %QUERY_1 );
@@ -409,7 +407,7 @@ subtest 'on_readable handles response with deviating QTYPE' => sub {
     eq_or_diff \@responses, [], 'no responses were accepted';
 };
 
-subtest 'on_readable handles response with deviating QCLASS' => sub {
+subtest 'on_readable rejects mismatched QCLASS after matched QID' => sub {
     my $socket = Mock::Scripted->new;
     my $sut    = Zonemaster::Engine::Async::UDPAdapter->new( $socket );
     prep_send( $sut, $socket, %QUERY_1 );
@@ -438,6 +436,19 @@ subtest 'on_readable handles response with deviating server' => sub {
     $socket->done_ok;
     test_wants( $sut, { read => 1 }, 'still awaiting responses' );
     eq_or_diff \@responses, [], 'no responses were accepted';
+};
+
+subtest 'on_readable accepts case-variant QNAME' => sub {
+    my $socket = Mock::Scripted->new;
+    my $sut    = Zonemaster::Engine::Async::UDPAdapter->new( $socket );
+    prep_send( $sut, $socket, %QUERY_1 );
+
+    $socket->expect( mk_recv_ok( { %RESPONSE_1, qname => '1.TEST' }, 'case variant' ) );
+    $socket->expect( mk_recv_err( &EWOULDBLOCK, 'drain' ) );
+    my @responses = pairmap { $a => $b->data } $sut->on_readable();
+
+    cmp_ok scalar( @responses ), '==', 2, 'accepted';
+    eq_or_diff \@responses, [ $QUERY_1{server}, dns_msg( %RESPONSE_1, qname => '1.TEST' ) ];
 };
 
 my $SOCKET  = Mock::Scripted->new;
@@ -508,4 +519,5 @@ subtest 'on_readable stops waiting to read after last response' => sub {
     eq_or_diff \@responses, [ $QUERY_4{server}, dns_msg( %RESPONSE_4 ) ];
 };
 
+had_no_warnings;
 done_testing;

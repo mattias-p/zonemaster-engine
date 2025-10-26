@@ -123,7 +123,7 @@ sub on_readable {
         redo if !$question_rr;
         redo if $question_rr->type() ne $qtype;
         redo if $question_rr->class() ne $qclass;
-        redo if $question_rr->name() ne $qname;
+        redo if lc( $question_rr->name() ) ne lc( $qname );
 
         my ( $port, $ip ) = unpack_sockaddr( $sockaddr );
 
