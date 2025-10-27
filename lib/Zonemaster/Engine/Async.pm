@@ -8,7 +8,10 @@ use IO::Socket;
 use Socket qw( AF_INET AF_INET6 );
 
 our @EXPORT_OK = qw(
+  friendly_dump
+  is_with_context
   pack_sockaddr
+  unified_dumper_diff
   unpack_sockaddr
 );
 

@@ -2,12 +2,13 @@ package Mock::Scripted;
 use v5.26;
 use warnings;
 
-use Carp qw( confess );
-use Data::Dumper;
-use Test::Builder;
-use Test::Deep::NoTest qw( eq_deeply );
+use Exporter           qw( import );
+use Test::Deep         qw( eq_deeply );
+use Test2::API         qw( context_do );
+use Test2::Tools::Mock qw( mock );
+use TestUtil           qw( friendly_dump );
 
-my $TB = Test::Builder->new;
+our @EXPORT_OK = qw( new_scripted_mock );
 
 =pod
 
@@ -23,187 +24,88 @@ Mock::Scripted is a minimal, scripted mock.
 You predeclare a script: a sequence of method calls with effects and return values.
 As the system under test makes the expected calls in the expected order, the effects and
 return values are produced.
-Each matching call is reported as a success to L<Test::Builder>.
-As soon as the system under test goes off script, this is reported as a failure to
-L<Test::Builder>, and execution aborts with L<confess|Carp/confess>.
+As soon as the system under test goes off script, this is reported as a failure and
+execution aborts with an exception.
 
 Mock::Scripted is intended for testing sharp edge cases on a single collaborator. The
 tradeoffs are brittleness when call order is non-deterministic and extra maintenance when
 refactors change sequencing.
 
-=head1 INTERFACE
-
-=head2 new
-
-  my $mock = Mock::Scripted->new;
-
-Create an empty script.
-
 =cut
 
-sub new {
-    my ( $class ) = @_;
+sub _call_string {
+    my ( $method, $args ) = @_;
 
-    my $obj = [];
+    my @friendly_args = map { "  " . friendly_dump( $_ ) . ",\n" } $args->@*;
 
-    return bless $obj, $class;
+    return sprintf "%s(\n%s)", $method, join( '', @friendly_args );
 }
 
-=head2 expect
+sub _process_call {
+    my ( $mock, $method, @args ) = @_;
 
-  $mock->expect(\%expectation) -> $mock
+    my $step;
 
-Append one expectation to the script. See L</Expectation hash>.
-Unknown keys and type errors are rejected with L<confess|Carp/confess>.
+    context_do {
+        my $ctx = shift;
 
-=cut
+        if ( $mock->{_i} >= $mock->{_steps}->@* ) {
+            $ctx->ok( 0, sprintf( "step %d: no more calls expected, got %s", $mock->{_i} + 1, $method ) );
+            $ctx->diag( friendly_dump( \@args ) );
+            $ctx->croak( "return value cannot be determined" );
+        }
 
-sub expect {
-    my ( $self, $expectation ) = @_;
+        $step = $mock->{_steps}[ $mock->{_i} ];
 
-    if ( ref $expectation ne 'HASH' ) {
-        confess 'script expectation must be a hashref';
-    }
+        my $ok   = $method eq $step->{method} && eq_deeply( \@args, $step->{args} );
+        my $name = $step->{name} // sprintf( "call to '%s'", $step->{method} );
 
-    my @impl = grep { exists $expectation->{$_} } qw( do returns );
-    if ( @impl != 1 ) {
-        confess 'exactly one of the following fields must be specified: do, returns';
-    }
+        $ctx->ok( $ok, sprintf( "step %d: %s per expectation at %s", $mock->{_i} + 1, $name, $step->{origin} ) );
+        if ( !$ok ) {
+            $ctx->diag(
+                sprintf "expected %s, got %s",
+                _call_string( $step->{method}, $step->{args} ),
+                _call_string( $method,         \@args ),
+            );
+            $ctx->croak( "return value cannot be determined" );
+        }
 
-    my %exp = $expectation->%*;
-    my ( $name, $method, $args, $do, $returns ) = delete @exp{qw( name method args do returns )};
-    if ( %exp ) {
-        confess 'unrecognized expectation fields: ' . join( ' ', sort keys %exp );
-    }
+        $mock->{_i} += 1;
+    };
 
-    if ( ref $name ne '' ) {
-        confess 'name must be a scalar';
-    }
+    return $step->{do}
+      ? $step->{do}->( @args )
+      : $step->{returns};
+} ## end sub _process_call
 
-    if ( !defined $method || ref $method ne '' ) {
-        confess 'method must be a defined scalar';
-    }
+sub new_scripted_mock {
+    my ( @allowed_methods ) = @_;
 
-    if ( ref $args ne 'ARRAY' ) {
-        confess 'args field must be an arrayref, got ' . ( ref( $args ) || 'a scalar' );
-    }
+    my %allowed = map { $_ => 1 } @allowed_methods;
 
-    if ( $impl[0] eq 'do' && ref $do ne 'CODE' ) {
-        confess 'do field must be a coderef, got ' . ( ref( $do ) || 'a scalar' );
-    }
+    my $mock = mock {} => (
+        add => [
+            map {
+                my $method = $_;
 
-    push $self->@*, $expectation;
-
-    return $self;
-} ## end sub expect
-
-=head2 done_ok
-
-  $mock->done_ok($name?);
-
-Emit an C<ok> via L<Test::Builder> asserting that the script is exhausted.
-On failure it emits diagnostics for each leftover expectation.
-
-=cut
-
-sub done_ok {
-    my ( $self, $name ) = @_;
-
-    $name //= 'no more calls expected';
-
-    $TB->ok( scalar( $self->@* ) == 0, $name );
-
-    for my $expectation ( $self->@* ) {
-        my ( $exp_method, $exp_args, $do ) = $expectation->@{qw( method args do )};
-        my %exp = (
-            method => $exp_method,
-            args   => $exp_args,
-        );
-        $TB->diag( "leftover: " . ( $expectation->{name} // "call to '$exp_method'" ) );
-        local $Data::Dumper::Purity   = 0;
-        local $Data::Dumper::Sortkeys = 1;
-        local $Data::Dumper::Terse    = 1;
-        $TB->diag( Dumper( \%exp ) );
-    }
-
-    return;
-} ## end sub done_ok
-
-=head2 is_exhausted
-
-  my $ok = $mock->is_exhausted;
-
-Returns a boolean indicating emptiness.
-
-=cut
-
-sub is_exhausted {
-    my ( $self ) = @_;
-
-    return !$self->@*;
-}
-
-=head2 Any other method name
-
-  $mock->some_method(@args);
-
-All other method names are handled by C<AUTOLOAD> (C<DESTROY> excluded).
-Each call must match the next scripted expectation.
-On mismatch or script exhaustion a failing test is emitted, a diagnostic dump of C<got> vs
-C<expected> is printed, and the code L<confess|Carp/confess>es.
-
-=cut
-
-sub AUTOLOAD {
-    my ( $self, @args ) = @_;
-    our $AUTOLOAD;
-
-    if ( $AUTOLOAD =~ /::DESTROY\z/ ) {
-        return;
-    }
-
-    my $got_method = $AUTOLOAD =~ s/^.*:://r;
-    my %got        = (
-        method => $got_method,
-        args   => \@args,
+                $method => sub {
+                    my ( $mock, @args ) = @_;
+                    _process_call( $mock, $method, @args );
+                }
+            } keys %allowed
+        ]
     );
+    $mock->{_steps} = [];
+    $mock->{_i}     = 0;
 
-    my $expectation = shift( $self->@* );
-    if ( !$expectation ) {
-        $TB->ok( 0, 'no more calls expected, got ' . $got_method );
-        $TB->diag( Dumper( \%got ) );
-        confess "unexpected call to '$got_method'";
-    }
+    my $controller = bless {
+        _mock    => $mock,
+        _allowed => \%allowed,
+      },
+      'Mock::Scripted::Ctl';
 
-    my ( $name, $exp_method, $exp_args, $do, $returns ) = $expectation->@{qw( name method args do returns )};
-    my %exp = (
-        method => $exp_method,
-        args   => $exp_args,
-    );
-
-    $name //= "call to '$exp_method' with expected args";
-
-    local $Test::Builder::Level = $Test::Builder::Level + 1;
-    my $ok = eq_deeply( \%got, \%exp );
-
-    $TB->ok( $ok, $name );
-    if ( !$ok ) {
-        local $Data::Dumper::Purity   = 0;
-        local $Data::Dumper::Sortkeys = 1;
-        local $Data::Dumper::Terse    = 1;
-        $TB->diag( Dumper( { got => \%got, expected => \%exp } ) );
-        confess "unexpected call to '$got_method'";
-    }
-
-    if ( $do ) {
-        return $do->( @args );
-    }
-    else {
-        return $returns;
-    }
-} ## end sub AUTOLOAD
-
-1;
+    return ( $controller, $mock );
+} ## end sub new_scripted_mock
 
 =head1 Expectation hash
 
@@ -233,8 +135,111 @@ Arrayref. The exact argument list. You may include L<Test::Deep> matchers
 
 N.b., C<do> may modify C<$!> to simulate syscalls.
 
-=head1 SEE ALSO
-
-L<Test::More>, L<Test::Builder>, L<Test::Deep>, L<Carp>.
-
 =cut
+
+package Mock::Scripted::Ctl;
+use v5.26;
+use warnings;
+
+use Carp       qw( confess );
+use Test2::API qw( context_do );
+use TestUtil   qw( friendly_dump );
+
+sub _validate_step {
+    my ( $self, $step ) = @_;
+
+    if ( ref( $step ) ne 'HASH' ) {
+        confess 'step must be a hashref';
+    }
+
+    my @missing = grep { !exists $step->{$_} } qw( method args );
+    if ( @missing ) {
+        confess 'missing step fields: ' . join( ', ', @missing );
+    }
+
+    my @impl = grep { exists $step->{$_} } qw( do returns );
+    if ( @impl != 1 ) {
+        confess 'exactly one of the following fields must be specified: do, returns';
+    }
+
+    my %exp = $step->%*;
+    my ( $name, $method, $args, $do, $returns ) = delete @exp{qw( name method args do returns )};
+    if ( %exp ) {
+        confess 'unrecognized step fields: ' . join( ' ', sort keys %exp );
+    }
+
+    if ( ref( $name ) ne '' ) {
+        confess 'name field must be a scalar';
+    }
+
+    confess 'method field must specify an allowed method'
+      if !exists $self->{_allowed}{$method};
+
+    if ( ref( $args ) ne 'ARRAY' ) {
+        confess 'args field must be an arrayref, got ' . ( ref( $args ) || 'a scalar' );
+    }
+
+    if ( exists $step->{do} && ref( $do ) ne 'CODE' ) {
+        confess 'do field must be a coderef';
+    }
+
+    return;
+} ## end sub _validate_step
+
+sub expect {
+    my ( $self, $step ) = @_;
+
+    $self->_validate_step( $step );
+
+    push $self->{_mock}{_steps}->@*, {
+        $step->%*,
+        origin => do {
+            my ( undef, $file, $line ) = caller;
+            "$file:$line";
+        },
+    };
+
+    return;
+}
+
+sub remaining {
+    my ( $self ) = @_;
+
+    return [ $self->{_mock}{_steps}->@[ $self->{_mock}{_i} .. $self->{_mock}{_steps}->$#* ] ];
+}
+
+sub done_ok {
+    my ( $self, $name ) = @_;
+
+    context_do {
+        my $ctx = shift;
+
+        my $remaining = $self->remaining;
+
+        my $message = sprintf 'before step %d: %s', $self->{_mock}{_i} + 1, $name // 'all expected calls were made';
+        $ctx->ok( !$remaining->@*, $message );
+        if ( $remaining->@* ) {
+            $ctx->diag( "unfulfilled expectations:" . friendly_dump( $remaining ) );
+        }
+    };
+
+    return;
+}
+
+sub is_exhausted {
+    my ( $self ) = @_;
+
+    return $self->{_mock}{_i} >= $self->{_mock}{_steps}->@*;
+}
+
+sub DESTROY {
+    my ( $self ) = @_;
+
+    if ( !$self->is_exhausted ) {
+        warn "Mock::Scripted destroyed with unfulfilled expectations:\n" . friendly_dump( $self->remaining );
+    }
+
+    return;
+}
+
+1;
