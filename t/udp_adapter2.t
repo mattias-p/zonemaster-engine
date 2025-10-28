@@ -44,7 +44,7 @@ sub mk_recv_data {
         method => 'recv',
         args   => [ ignore(), MAX_RECV_HINT ],
         do     => sub {
-            ${ $_[0] } = $message;
+            $_[0] = $message;
             $sockaddr;
         },
     };

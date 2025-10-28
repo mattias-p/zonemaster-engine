@@ -42,7 +42,9 @@ sub _call_string {
 }
 
 sub _process_call {
-    my ( $mock, $method, @args ) = @_;
+    my $mock   = shift;
+    my $method = shift;
+    my @args   = @_;
 
     my $step;
 
@@ -74,7 +76,7 @@ sub _process_call {
     };
 
     return $step->{do}
-      ? $step->{do}->( @args )
+      ? $step->{do}->( @_ )
       : $step->{returns};
 } ## end sub _process_call
 
@@ -89,8 +91,8 @@ sub new_scripted_mock {
                 my $method = $_;
 
                 $method => sub {
-                    my ( $mock, @args ) = @_;
-                    _process_call( $mock, $method, @args );
+                    splice @_, 1, 0, $method;
+                    _process_call( @_ );
                 }
             } keys %allowed
         ]
