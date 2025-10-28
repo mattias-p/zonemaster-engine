@@ -4,7 +4,8 @@ use warnings;
 
 use Carp qw( croak );
 use English;
-use Errno qw( EINTR EAGAIN EWOULDBLOCK ENOBUFS EBADMSG );
+use Errno    qw( EINTR EAGAIN EWOULDBLOCK ENOBUFS EBADMSG );
+use Log::Any qw( $log );
 use IO::Socket;
 
 use Zonemaster::Engine::Async qw( pack_sockaddr unpack_sockaddr );
@@ -16,9 +17,10 @@ sub new {
     my ( $class, $socket ) = @_;
 
     my $obj = {
-        socket  => $socket,
-        pending => [],        # flattened list of (server ip, wire) pairs
-        active  => {},        # hash from IP to hash from QID to the number 1
+        _socket  => $socket,
+        _pending => [],        # flattened list of (server ip, wire) pairs
+        _active  => {},        # hash from IP to hash from QID to the number 1
+        tracer   => undef,
     };
 
     return bless $obj, $class;
@@ -33,7 +35,7 @@ sub enqueue {
     my ( $question_rr ) = $packet->question();
     my $question        = [ $question_rr->name(), $question_rr->type(), $question_rr->class() ];
 
-    push $self->{pending}->@*,
+    push $self->{_pending}->@*,
       {
         sockaddr => $sockaddr,
         qid      => $qid,
@@ -47,13 +49,13 @@ sub enqueue {
 sub want_write {
     my ( $self ) = @_;
 
-    return scalar( $self->{pending}->@* );
+    return scalar( $self->{_pending}->@* );
 }
 
 sub want_read {
     my ( $self ) = @_;
 
-    return scalar map { keys $_->%* } values $self->{active}->%*;
+    return scalar map { keys $_->%* } values $self->{_active}->%*;
 }
 
 sub on_writable {
@@ -62,17 +64,17 @@ sub on_writable {
     my $i = 0;
 
   QUEUE:
-    while ( $i <= $self->{pending}->$#* ) {
-        my ( $server, $qid, $question, $message ) = $self->{pending}->[$i]->@{qw( sockaddr qid question message )};
+    while ( $i <= $self->{_pending}->$#* ) {
+        my ( $server, $qid, $question, $message ) = $self->{_pending}->[$i]->@{qw( sockaddr qid question message )};
 
         my $message_len = length $message;
         local $ERRNO = 0;
         for ( ; ; ) {
-            my $sent = $self->{socket}->send( $message, 0, $server );
+            my $sent = $self->{_socket}->send( $message, 0, $server );
 
             if ( defined $sent ) {
-                $self->{active}{$server} //= {};
-                $self->{active}{$server}{$qid} = $question;
+                $self->{_active}{$server} //= {};
+                $self->{_active}{$server}{$qid} = $question;
 
                 $i += 1;
                 next QUEUE;
@@ -84,9 +86,9 @@ sub on_writable {
             croak sprintf( "send to %s failed: %s:%d (%d)", $ip, $port, $ERRNO, $ERRNO );
         }
 
-    } ## end QUEUE: while ( $i <= $self->{pending...})
+    } ## end QUEUE: while ( $i <= $self->{_pending...})
 
-    splice $self->{pending}->@*, 0, $i;
+    splice $self->{_pending}->@*, 0, $i;
 
     return;
 } ## end sub on_writable
@@ -94,46 +96,81 @@ sub on_writable {
 sub on_readable {
     my ( $self ) = @_;
 
+    $log->trace( 'on_readable: enter' );
+
     my @responses;
-    while ( $self->{active}->%* ) {
+    while ( $self->{_active}->%* ) {
+        $log->tracef( 'on_readable: %d active exchanges', scalar keys $self->{_active}->%* );
         my $buffer   = '';
-        my $sockaddr = $self->{socket}->recv( \$buffer, MAX_RECV_HINT );
+        my $sockaddr = $self->{_socket}->recv( $buffer, MAX_RECV_HINT );
         if ( !$sockaddr ) {
-            next if $!{EINTR};
-            last if $!{EAGAIN} || $!{EWOULDBLOCK} || $!{ENOBUFS};
+            if ( $!{EINTR} ) {
+                $log->trace( 'on_readable: recv->EINTR; retry' );
+                next;
+            }
+            if ( $!{EWOULDBLOCK} || $!{EAGAIN} || $!{ENOBUFS} ) {
+                $log->trace( 'on_readable: recv->EWOULDBLOCK|EAGAIN|ENOBUFS; return' );
+                last;
+            }
             croak sprintf( "recv failed: %s (%d)", $ERRNO, $ERRNO );
         }
 
-        next if length $buffer < DNS_HEADER_SIZE;
+        if ( length $buffer < DNS_HEADER_SIZE ) {
+            $log->trace( 'on_readable: incomplete header (%d bytes); retry', length $buffer );
+            redo;
+        }
 
         my $qid      = unpack( 'n', $buffer );
-        my $question = exists $self->{active}{$sockaddr} && $self->{active}{$sockaddr}{$qid};
-        redo if !$question;
+        my $question = exists $self->{_active}{$sockaddr} && $self->{_active}{$sockaddr}{$qid};
+        if ( !$question ) {
+            $log->trace( 'on_readable: no matching request; retry' );
+            redo;
+        }
 
         my $packet = Zonemaster::LDNS::Packet->new_from_wireformat2( $buffer );
         if ( !defined $packet ) {
-            redo if $!{EBADMSG};
+            if ( $!{EBADMSG} ) {
+                $log->trace( 'on_readable: parse->EBADMSG; retry' );
+                redo;
+            }
             croak sprintf( "parse failed: %s (%d)", $ERRNO, $ERRNO );
         }
 
-        redo if !$packet->qr();
+        if ( !$packet->qr() ) {
+            $log->trace( 'on_readable: QR=0; retry' );
+            redo;
+        }
         my ( $qname, $qtype, $qclass ) = $question->@*;
 
         my ( $question_rr ) = $packet->question();
-        redo if !$question_rr;
-        redo if $question_rr->type() ne $qtype;
-        redo if $question_rr->class() ne $qclass;
-        redo if lc( $question_rr->name() ) ne lc( $qname );
+        if ( !$question_rr ) {
+            $log->trace( 'on_readable: QDCOUNT=0; retry' );
+            redo;
+        }
+        if ( $question_rr->type() ne $qtype ) {
+            $log->trace( 'on_readable: QTYPE mismatch; retry' );
+            redo;
+        }
+        if ( $question_rr->class() ne $qclass ) {
+            $log->trace( 'on_readable: QCLASS mismatch; retry' );
+            redo;
+        }
+        if ( lc( $question_rr->name() ) ne lc( $qname ) ) {
+            $log->trace( 'on_readable: QNAME mismatch; retry' );
+            redo;
+        }
 
         my ( $port, $ip ) = unpack_sockaddr( $sockaddr );
 
         push @responses, $ip, $packet;
 
-        delete $self->{active}{$sockaddr}{$qid};
-        if ( !$self->{active}{$sockaddr}->%* ) {
-            delete $self->{active}{$sockaddr};
+        delete $self->{_active}{$sockaddr}{$qid};
+        if ( !$self->{_active}{$sockaddr}->%* ) {
+            delete $self->{_active}{$sockaddr};
         }
-    } ## end while ( $self->{active}->...)
+    } ## end while ( $self->{_active}->...)
+
+    $log->tracef( 'on_readable: return %d responses', scalar( @responses ) / 2 );
 
     return @responses;
 } ## end sub on_readable
