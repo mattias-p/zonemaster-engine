@@ -1,4 +1,4 @@
-package Zonemaster::Engine::Async::UDPAdapter;
+package Zonemaster::Engine::Async::UDPTransport;
 use v5.26;
 use warnings;
 
@@ -14,22 +14,41 @@ use constant MAX_RECV_HINT   => 65535;
 use constant DNS_HEADER_SIZE => 12;
 
 sub new {
-    my ( $class, $socket ) = @_;
+    my ( $class, $socket, $peerport ) = @_;
+
+    $peerport //= 53;
 
     my $obj = {
-        _socket  => $socket,
-        _pending => [],        # flattened list of (server ip, wire) pairs
-        _active  => {},        # hash from IP to hash from QID to the number 1
-        tracer   => undef,
+        _peerport => $peerport,
+        _socket   => $socket,
+        _pending  => [],          # flattened list of (server ip, wire) pairs
+        _active   => {},          # hash from IP to hash from QID to the number 1
     };
 
     return bless $obj, $class;
 }
 
+sub drop {
+    my ( $self, $server, $qid ) = @_;
+
+    my $sockaddr = pack_sockaddr( $server, $self->{_peerport} );
+
+    $self->{_pending}->@* = grep { $_->{sockaddr} ne $sockaddr || $_->{qid} != $qid } $self->{_pending}->@*;
+
+    if ( $self->{_active}{$sockaddr} ) {
+        delete $self->{_active}{$sockaddr}{$qid};
+        if ( !$self->{_active}{$sockaddr}->%* ) {
+            delete $self->{_active}{$sockaddr};
+        }
+    }
+
+    return;
+}
+
 sub enqueue {
     my ( $self, %query ) = @_;
 
-    my $sockaddr        = pack_sockaddr( $query{server}, 53 );
+    my $sockaddr        = pack_sockaddr( $query{server}, $self->{_peerport} );
     my $qid             = delete $query{qid};
     my $packet          = Zonemaster::Engine::Async::Query->new( %query )->mk_packet( $qid );
     my ( $question_rr ) = $packet->question();

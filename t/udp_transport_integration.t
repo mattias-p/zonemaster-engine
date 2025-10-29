@@ -1,26 +1,18 @@
 #!perl
 use v5.26;
-use strict;
 use warnings;
-
 use Test::More;
-use Test::Exception;
-use IO::Socket::INET;
-use IO::Handle  ();
-use Time::HiRes qw(usleep time);
-use Sub::Override;
-use Socket qw(inet_aton pack_sockaddr_in);
-use POSIX  qw(WNOHANG);
-use Log::Any::Adapter ( 'Stderr' );
 
-BEGIN {
-    eval {
-        require Zonemaster::Engine::Async::UDPAdapter;
-        require Zonemaster::Engine::Async::Query;
-        require Zonemaster::LDNS::Packet;
-        1;
-    } or plan skip_all => 'Zonemaster modules not available';
-}
+use Log::Any::Adapter ( 'Stderr' );
+use IO::Socket::INET;
+use IO::Handle ();
+use POSIX      qw(WNOHANG);
+use Test::Exception;
+use Time::HiRes qw(usleep time);
+
+use Zonemaster::Engine::Async::Query;
+use Zonemaster::Engine::Async::UDPTransport;
+use Zonemaster::LDNS::Packet;
 
 # ---- UDP responder on loopback, ephemeral port
 my $server = IO::Socket::INET->new(
@@ -54,23 +46,13 @@ if ( $pid == 0 ) {
 
 ok( $pid, 'responder started' );
 
-# ---- Override pack_sockaddr to direct traffic to ephemeral responder port
-my $ov = Sub::Override->new;
-$ov->replace(
-    'Zonemaster::Engine::Async::pack_sockaddr',
-    sub {
-        my ( $ip, $ignored_port ) = @_;
-        return pack_sockaddr_in( $srv_port, inet_aton( $ip ) );
-    }
-);
-
 # ---- Client socket, nonblocking
 my $client = IO::Socket::INET->new( Proto => 'udp' )
   or die "client socket: $!";
 IO::Handle::blocking( $client, 0 );
 
-# ---- Adapter under test
-my $adapter = Zonemaster::Engine::Async::UDPAdapter->new( $client );
+# ---- System under test
+my $sut = Zonemaster::Engine::Async::UDPTransport->new( $client, $srv_port );
 
 # Two queries
 my @cases = (
@@ -80,7 +62,7 @@ my @cases = (
 
 # Enqueue
 for my $c ( @cases ) {
-    $adapter->enqueue(
+    $sut->enqueue(
         server => $c->{server},
         qid    => $c->{qid},
         qname  => $c->{name},
@@ -88,17 +70,17 @@ for my $c ( @cases ) {
         qclass => $c->{class},
     );
 }
-is( $adapter->want_write, 2, 'want_write reflects pending=2' );
+is( $sut->want_write, 2, 'want_write reflects pending=2' );
 
 # Send
-$adapter->on_writable;
-is( $adapter->want_write, 0, 'pending drained after on_writable' );
+$sut->on_writable;
+is( $sut->want_write, 0, 'pending drained after on_writable' );
 
 # Poll for responses
 my @got;
 my $deadline = time() + 3;    # 3s safety
 while ( time() < $deadline ) {
-    my @pairs = $adapter->on_readable;
+    my @pairs = $sut->on_readable;
     push @got, @pairs if @pairs;
     last if @got == 4;        # two (ip, packet) pairs
     usleep 50_000;
@@ -118,10 +100,9 @@ for ( my $i = 0 ; $i < @got ; $i += 2 ) {
 
 ok( $seen{'example.com.'} && $seen{'example.net.'}, 'both question names echoed' );
 
-is( $adapter->want_read, 0, 'no active after responses' );
+is( $sut->want_read, 0, 'no active after responses' );
 
 # ---- Cleanup
-$ov->restore;
 kill 'TERM', $pid;
 for ( 1 .. 20 ) { last if waitpid( $pid, WNOHANG ) > 0; usleep 50_000 }
 
