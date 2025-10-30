@@ -28,17 +28,22 @@ sub new {
     return bless $obj, $class;
 }
 
+sub socket {
+    my ( $self ) = @_;
+
+    return $self->{_socket};
+}
+
 sub drop {
-    my ( $self, $server, $qid ) = @_;
+    my ( $self, $qid ) = @_;
 
-    my $sockaddr = pack_sockaddr( $server, $self->{_peerport} );
+    $self->{_pending}->@* = grep { $_->{qid} != $qid } $self->{_pending}->@*;
 
-    $self->{_pending}->@* = grep { $_->{sockaddr} ne $sockaddr || $_->{qid} != $qid } $self->{_pending}->@*;
-
-    if ( $self->{_active}{$sockaddr} ) {
-        delete $self->{_active}{$sockaddr}{$qid};
-        if ( !$self->{_active}{$sockaddr}->%* ) {
-            delete $self->{_active}{$sockaddr};
+    for my $sockaddr ( keys $self->{_active}->%* ) {
+        if ( delete $self->{_active}{$sockaddr}{$qid} ) {
+            if ( !$self->{_active}{$sockaddr}->%* ) {
+                delete $self->{_active}{$sockaddr};
+            }
         }
     }
 
@@ -46,11 +51,10 @@ sub drop {
 }
 
 sub enqueue {
-    my ( $self, %query ) = @_;
+    my ( $self, $qid, $query ) = @_;
 
-    my $sockaddr        = pack_sockaddr( $query{server}, $self->{_peerport} );
-    my $qid             = delete $query{qid};
-    my $packet          = Zonemaster::Engine::Async::Query->new( %query )->mk_packet( $qid );
+    my $sockaddr        = pack_sockaddr( $query->server(), $self->{_peerport} );
+    my $packet          = $query->mk_packet( $qid );
     my ( $question_rr ) = $packet->question();
     my $question        = [ $question_rr->name(), $question_rr->type(), $question_rr->class() ];
 
@@ -102,7 +106,7 @@ sub on_writable {
             next       if $!{EINTR};
             last QUEUE if $!{EAGAIN} || $!{EWOULDBLOCK} || $!{ENOBUFS};
             my ( $port, $ip ) = unpack_sockaddr( $server );
-            croak sprintf( "send to %s failed: %s:%d (%d)", $ip, $port, $ERRNO, $ERRNO );
+            croak sprintf( "send to %s:%d failed: %s (%d)", $ip, $port, $ERRNO, $ERRNO );
         }
 
     } ## end QUEUE: while ( $i <= $self->{_pending...})

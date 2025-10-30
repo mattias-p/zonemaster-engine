@@ -14,6 +14,14 @@ use Zonemaster::Engine::Async::Query;
 use Zonemaster::Engine::Async::UDPTransport;
 use Zonemaster::LDNS::Packet;
 
+sub to_query {
+    my ( %args ) = @_;
+    my $qid      = delete $args{qid};
+    my $query    = Zonemaster::Engine::Async::Query->new( %args );
+
+    return ( $qid, $query );
+}
+
 # ---- UDP responder on loopback, ephemeral port
 my $server = IO::Socket::INET->new(
     LocalAddr => '127.0.0.1',
@@ -56,19 +64,13 @@ my $sut = Zonemaster::Engine::Async::UDPTransport->new( $client, $srv_port );
 
 # Two queries
 my @cases = (
-    { qid => 0x1234, server => '127.0.0.1', name => 'example.com.', type => 'A',    class => 'IN' },
-    { qid => 0x2233, server => '127.0.0.1', name => 'example.net.', type => 'AAAA', class => 'IN' },
+    { qid => 0x1234, server => '127.0.0.1', qname => 'example.com.', qtype => 'A',    qclass => 'IN' },
+    { qid => 0x2233, server => '127.0.0.1', qname => 'example.net.', qtype => 'AAAA', qclass => 'IN' },
 );
 
 # Enqueue
 for my $c ( @cases ) {
-    $sut->enqueue(
-        server => $c->{server},
-        qid    => $c->{qid},
-        qname  => $c->{name},
-        qtype  => $c->{type},
-        qclass => $c->{class},
-    );
+    $sut->enqueue( to_query( $c->%* ) );
 }
 is( $sut->want_write, 2, 'want_write reflects pending=2' );
 

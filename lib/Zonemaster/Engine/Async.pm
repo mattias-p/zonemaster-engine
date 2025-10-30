@@ -8,6 +8,7 @@ use IO::Socket;
 use Socket qw( AF_INET AF_INET6 );
 
 our @EXPORT_OK = qw(
+  errno_names
   friendly_dump
   is_with_context
   pack_sockaddr
@@ -59,6 +60,12 @@ sub pack_sockaddr {
     }
 
     croak "invalid IP";
+}
+
+sub errno_names {
+    my ( $num ) = @_;
+    local $! = $num +0;                         # force numeric
+    return [ sort grep { $!{$_} } keys %! ];    # may be multiple, e.g. EAGAIN/EWOULDBLOCK
 }
 
 1;

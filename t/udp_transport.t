@@ -95,7 +95,7 @@ sub prep_send {
     BAIL_OUT( 'prep: unexpectedly waiting to send' )
       if $sut->want_write;
 
-    $sut->enqueue( %query );
+    $sut->enqueue( to_query( %query ) );
     $ctl->expect( mk_send_ok( \%query, 'prep: send' ) );
     $sut->on_writable;
 
@@ -169,6 +169,14 @@ my %RESPONSE_2 = ( %QUERY_2, qr => 1 );
 my %RESPONSE_3 = ( %QUERY_3, qr => 1 );
 my %RESPONSE_4 = ( %QUERY_4, qr => 1 );
 
+sub to_query {
+    my ( %args ) = @_;
+    my $qid      = delete $args{qid};
+    my $query    = Zonemaster::Engine::Async::Query->new( %args );
+
+    return ( $qid, $query );
+}
+
 subtest 'errnos causing on_writable to throw' => sub {
     my @send_fatal_errnos = qw(
       EACCES
@@ -191,7 +199,7 @@ subtest 'errnos causing on_writable to throw' => sub {
 
             my ( $sut, $ctl ) = setup();
 
-            $sut->enqueue( %QUERY_1 );
+            $sut->enqueue( to_query( %QUERY_1 ) );
             $ctl->expect( mk_send_err( {%QUERY_1}, $errno, "send(query 1)->$mnemonic" ) );
 
             throws_ok {
@@ -248,7 +256,7 @@ subtest 'errnos causing on_writable to return' => sub {
 
             $ctl->expect( mk_send_err( {%QUERY_1}, $errno, "senf(query 1)->$mnemonic" ), );
 
-            $sut->enqueue( %QUERY_1 );
+            $sut->enqueue( to_query( %QUERY_1 ) );
             $sut->on_writable();
 
             $ctl->done_ok( "no more attempts to send after $mnemonic" );
@@ -286,7 +294,7 @@ subtest 'errnos causing on_readable to return' => sub {
 subtest 'on_writable should retry on EINTR' => sub {
     my ( $ctl, $socket ) = new_scripted_mock( qw( send recv ) );
     my $sut = Zonemaster::Engine::Async::UDPTransport->new( $socket );
-    $sut->enqueue( %QUERY_1 );
+    $sut->enqueue( to_query( %QUERY_1 ) );
 
     $ctl->expect( mk_send_err( {%QUERY_1}, &EINTR,       'send(query 1)->EINTR' ) );
     $ctl->expect( mk_send_err( {%QUERY_1}, &EINTR,       'send(query 1)->EINTR' ) );
@@ -457,16 +465,16 @@ subtest 'on_readable accepts TC=1' => sub {
 subtest 'drop ignores unrecognized exhanges' => sub {
     my ( $sut, $ctl ) = setup();
 
-    $sut->drop( $QUERY_1{server}, $QUERY_1{qid} );
+    $sut->drop( $QUERY_1{qid} );
     test_wants( $sut, {} );
 };
 
 subtest 'drop removes pending exhanges' => sub {
     my ( $sut, $ctl ) = setup();
 
-    $sut->enqueue( %QUERY_1 );
-    $sut->enqueue( %QUERY_2 );
-    $sut->drop( $QUERY_1{server}, $QUERY_1{qid} );
+    $sut->enqueue( to_query( %QUERY_1 ) );
+    $sut->enqueue( to_query( %QUERY_2 ) );
+    $sut->drop( $QUERY_1{qid} );
     test_wants( $sut, { write => 1 } );
 };
 
@@ -475,12 +483,12 @@ subtest 'drop removes pending exhanges' => sub {
 
     $ctl->expect( mk_send_ok( \%QUERY_1 ) );
     $ctl->expect( mk_send_ok( \%QUERY_2 ) );
-    $sut->enqueue( %QUERY_1 );
-    $sut->enqueue( %QUERY_2 );
+    $sut->enqueue( to_query( %QUERY_1 ) );
+    $sut->enqueue( to_query( %QUERY_2 ) );
     $sut->on_writable();
     $ctl->done_ok;
 
-    $sut->drop( $QUERY_1{server}, $QUERY_1{qid} );
+    $sut->drop( $QUERY_1{qid} );
     test_wants( $sut, { read => 1 } );
 };
 
@@ -491,10 +499,10 @@ subtest 'a sequence' => sub {
 
     note 'enqueue queries';
 
-    $sut->enqueue( %QUERY_1 );
-    $sut->enqueue( %QUERY_2 );
-    $sut->enqueue( %QUERY_3 );
-    $sut->enqueue( %QUERY_4 );
+    $sut->enqueue( to_query( %QUERY_1 ) );
+    $sut->enqueue( to_query( %QUERY_2 ) );
+    $sut->enqueue( to_query( %QUERY_3 ) );
+    $sut->enqueue( to_query( %QUERY_4 ) );
 
     test_wants( $sut, { write => 4 }, 'should want write on single socket for multiple messages' );
 
