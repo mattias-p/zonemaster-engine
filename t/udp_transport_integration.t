@@ -82,19 +82,16 @@ is( $sut->want_write, 0, 'pending drained after on_writable' );
 my @got;
 my $deadline = time() + 3;    # 3s safety
 while ( time() < $deadline ) {
-    my @pairs = $sut->on_readable;
-    push @got, @pairs if @pairs;
-    last if @got == 4;        # two (ip, packet) pairs
+    my @responses = $sut->on_readable;
+    push @got, @responses if @responses;
+    last if @got == 2;
     usleep 50_000;
 }
-is( scalar( @got ) / 2, 2, 'received two responses' );
+is( scalar( @got ), 2, 'received two responses' );
 
 # Verify content and order insensitively by qname
 my %seen;
-for ( my $i = 0 ; $i < @got ; $i += 2 ) {
-    my ( $ip, $pkt ) = @got[ $i, $i + 1 ];
-    is( $ip, '127.0.0.1', 'response ip is loopback' );
-
+for my $pkt ( @got ) {
     my ( $qrr ) = $pkt->question();
     my $name = $qrr->name();
     $seen{ lc $name }++;

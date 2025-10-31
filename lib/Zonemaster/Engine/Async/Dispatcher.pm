@@ -59,8 +59,8 @@ sub add_timeout {
     }
 
     # Linearly walk the range of qids with a random step size from a random starting point
-    # until an available qid is found. An uninterrupted walk is guaranteed to visit every
-    # other qid before returning to the starting point because no odd numbers have any
+    # until an available qid is found. An uninterrupted walk is guaranteed to visit all
+    # other QIDs before returning to the starting point because no odd numbers have any
     # common divisor with the range size.
     my $qid  = int( rand( 0x10000 ) );
     my $step = int( rand( 0x10000 ) ) | 0x0001;
@@ -130,9 +130,8 @@ sub poll_responses {
             }
             if ( $readable->@* ) {
                 my @new_results = $self->{_udp}->on_readable;
-                for ( my $i = 0 ; $i < $#new_results ; $i += 2 ) {
-                    my $packet = $new_results[ $i + 1 ];
-                    my $qid    = $packet->id();
+                for my $packet ( @new_results ) {
+                    my $qid = $packet->id();
                     delete $self->{_deadlines}{$qid};
                     push @results, $qid, $packet;
                 }

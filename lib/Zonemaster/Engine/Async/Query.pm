@@ -106,7 +106,7 @@ sub mk_packet {
     if ( defined $self->{edns_version} ) {
         $packet->set_edns_present();
         $packet->do( $self->{edns_do} );
-        $packet->edns_size( $self->{edns_udpsize} );
+        $packet->edns_size( $self->{edns_udp_size} );
         $packet->edns_version( $self->{edns_version} );
         $packet->edns_z( $self->{edns_z} );
         if ( $self->{edns_data} ) {
