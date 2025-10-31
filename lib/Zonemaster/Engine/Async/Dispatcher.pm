@@ -101,15 +101,15 @@ sub poll_responses {
     }
 
     my $want_read = IO::Select->new();
-    if ( $self->{_udp}->want_read ) {
+    if ( $self->{_udp}->inflight_count ) {
         $log->trace( 'poll_responses: want read' );
-        $want_read->add( $self->{_udp}->socket );
+        $want_read->add( $self->{_udp}->io_handle );
     }
 
     my $want_write = IO::Select->new();
-    if ( $self->{_udp}->want_write ) {
+    if ( $self->{_udp}->send_queue_len ) {
         $log->trace( 'poll_responses: want write' );
-        $want_write->add( $self->{_udp}->socket );
+        $want_write->add( $self->{_udp}->io_handle );
     }
 
     my $earliest_deadline = min values $self->{_deadlines}->%*;
@@ -126,10 +126,10 @@ sub poll_responses {
         local $ERRNO = 0;
         if ( my ( $readable, $writable, undef ) = IO::Select->select( $want_read, $want_write, undef, $timeout ) ) {
             if ( $writable->@* ) {
-                $self->{_udp}->on_writable;
+                $self->{_udp}->handle_writable;
             }
             if ( $readable->@* ) {
-                my @new_results = $self->{_udp}->on_readable;
+                my @new_results = $self->{_udp}->handle_readable;
                 for my $packet ( @new_results ) {
                     my $qid = $packet->id();
                     delete $self->{_deadlines}{$qid};
@@ -155,7 +155,7 @@ sub poll_responses {
 
     for my $qid ( @expired ) {
         delete $self->{_deadlines}{$qid};
-        $self->{_udp}->drop( $qid );
+        $self->{_udp}->cancel( $qid );
         push @results, ( $qid, &ETIMEDOUT );
     }
 

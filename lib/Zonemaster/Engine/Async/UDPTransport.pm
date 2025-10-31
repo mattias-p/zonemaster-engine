@@ -31,19 +31,19 @@ Zonemaster::Engine::Async::UDPTransport - Nonblocking UDP transport for DNS quer
     $tx->enqueue( $qid, $query );
 
     # Drive I/O from your event loop
-    if ( $tx->want_write ) {
-        $tx->on_writable;    # sends as much as possible without blocking
+    if ( $tx->send_queue_len ) {
+        $tx->handle_writable;    # sends as much as possible without blocking
     }
 
-    if ( $tx->want_read ) {
-        my @packets = $tx->on_readable;
+    if ( $tx->inflight_count ) {
+        my @packets = $tx->handle_readable;
         for my $packet ( @packets ) {
             # handle $packet
         }
     }
 
     # Cancel an outstanding exchange by QID
-    $tx->drop( $qid );
+    $tx->cancel( $qid );
 
 =head1 DESCRIPTION
 
@@ -54,8 +54,8 @@ It validates that incoming responses match the original question before returnin
 them to the caller.
 
 This module does not implement timers, retries, or retransmission. Integrate it
-with a reactor to poll the underlying socket and call C<on_writable> and
-C<on_readable> when appropriate.
+with a reactor to poll the underlying socket and call C<handle_writable> and
+C<handle_readable> when appropriate.
 
 =cut
 
@@ -107,13 +107,13 @@ sub new {
 
 =head1 METHODS
 
-=head2 socket( )
+=head2 io_handle( )
 
 Return the underlying socket object.
 
 =cut
 
-sub socket {
+sub io_handle {
     my ( $self ) = @_;
 
     return $self->{_socket};
@@ -133,7 +133,7 @@ destination for the query.
 
 =back
 
-No network I/O happens until C<on_writable> is called.
+No network I/O happens until C<handle_writable> is called.
 
 =cut
 
@@ -155,14 +155,14 @@ sub enqueue {
     return;
 }
 
-=head2 drop( $qid )
+=head2 cancel( $qid )
 
 Cancel any pending or active exchange matching C<$qid>. Safe to call even if the
 ID is unknown.
 
 =cut
 
-sub drop {
+sub cancel {
     my ( $self, $qid ) = @_;
 
     $self->{_pending}->@* = grep { $_->{qid} != $qid } $self->{_pending}->@*;
@@ -171,33 +171,33 @@ sub drop {
     return;
 }
 
-=head2 want_write( )
+=head2 send_queue_len( )
 
 Return the count of pending datagrams waiting to be sent. Nonzero means
-C<on_writable> may make progress.
+C<handle_writable> may make progress.
 
 =cut
 
-sub want_write {
+sub send_queue_len {
     my ( $self ) = @_;
 
     return scalar( $self->{_pending}->@* );
 }
 
-=head2 want_read( )
+=head2 inflight_count( )
 
-Return the count of outstanding active exchanges. Nonzero means C<on_readable> may yield
+Return the count of outstanding active exchanges. Nonzero means C<handle_readable> may yield
 responses.
 
 =cut
 
-sub want_read {
+sub inflight_count {
     my ( $self ) = @_;
 
     return scalar keys $self->{_active}->%*;
 }
 
-=head2 on_writable( )
+=head2 handle_writable( )
 
 Attempt to send all pending datagrams until the socket would block or the queue
 is empty. Internally retries C<EINTR>. On C<EAGAIN>, C<EWOULDBLOCK>, or
@@ -208,7 +208,7 @@ Returns nothing.
 
 =cut
 
-sub on_writable {
+sub handle_writable {
     my ( $self ) = @_;
 
     my $i = 0;
@@ -241,9 +241,9 @@ sub on_writable {
     splice $self->{_pending}->@*, 0, $i;
 
     return;
-} ## end sub on_writable
+} ## end sub handle_writable
 
-=head2 on_readable( ) -> @packets
+=head2 handle_readable( ) -> @packets
 
 Read and validate as many UDP datagrams as are immediately available and match
 active exchanges. Returns a list of L<Zonemaster::LDNS::Packet> objects. Order
@@ -255,8 +255,8 @@ Behavior:
 
 =item * Retries C<recv> on C<EINTR>.
 
-=item * Returns immediately on C<EAGAIN>, C<EWOULDBLOCK>, or C<ENOBUFS> with
-whatever responses were collected so far.
+=item * Returns immediately on C<EAGAIN> or C<EWOULDBLOCK> with whatever
+responses were collected so far.
 
 =item * Extracts QID and finds a matching active exchange for that source
 address.
@@ -291,7 +291,7 @@ case-insensitive C<QNAME>.
 
 =cut
 
-sub on_readable {
+sub handle_readable {
     my ( $self ) = @_;
 
     my @responses;
@@ -300,64 +300,64 @@ sub on_readable {
         my $src_addr = $self->{_socket}->recv( $buffer, MAX_RECV_HINT );
         if ( !$src_addr ) {
             if ( $!{EINTR} ) {
-                $log->trace( 'on_readable: recv->EINTR; retry' );
+                $log->trace( 'handle_readable: recv->EINTR; retry' );
                 next;
             }
-            if ( $!{EWOULDBLOCK} || $!{EAGAIN} || $!{ENOBUFS} ) {
-                $log->trace( 'on_readable: recv->EWOULDBLOCK|EAGAIN; return' );
+            if ( $!{EWOULDBLOCK} || $!{EAGAIN} ) {
+                $log->trace( 'handle_readable: recv->EWOULDBLOCK|EAGAIN; return' );
                 last;
             }
             croak sprintf( "recv failed: %s (%d)", $ERRNO, $ERRNO );
         }
 
         if ( length $buffer < DNS_HEADER_SIZE ) {
-            $log->tracef( 'on_readable: incomplete header (%d bytes); retry', length $buffer );
+            $log->tracef( 'handle_readable: incomplete header (%d bytes); retry', length $buffer );
             redo;
         }
 
         my $qid      = unpack( 'n', $buffer );
         my $question = $self->{_active}{$qid};
         if ( !$question ) {
-            $log->trace( 'on_readable: no matching QID; retry' );
+            $log->trace( 'handle_readable: no matching QID; retry' );
             redo;
         }
 
         my ( $dst_addr, $qname, $qtype, $qclass ) = $question->@*;
 
         if ( $dst_addr ne $src_addr ) {
-            $log->trace( 'on_readable: no matching QID/server; retry' );
+            $log->trace( 'handle_readable: no matching QID/server; retry' );
             redo;
         }
 
         my $packet = Zonemaster::LDNS::Packet->new_from_wireformat2( $buffer );
         if ( !defined $packet ) {
             if ( $!{EBADMSG} ) {
-                $log->trace( 'on_readable: parse->EBADMSG; retry' );
+                $log->trace( 'handle_readable: parse->EBADMSG; retry' );
                 redo;
             }
             croak sprintf( "parse failed: %s (%d)", $ERRNO, $ERRNO );
         }
 
         if ( !$packet->qr() ) {
-            $log->trace( 'on_readable: QR=0; retry' );
+            $log->trace( 'handle_readable: QR=0; retry' );
             redo;
         }
 
         my @question_rrs = $packet->question();
         if ( @question_rrs != 1 ) {
-            $log->tracef( 'on_readable: QDCOUNT=%d; retry', scalar @question_rrs );
+            $log->tracef( 'handle_readable: QDCOUNT=%d; retry', scalar @question_rrs );
             redo;
         }
         if ( $question_rrs[0]->type() ne $qtype ) {
-            $log->trace( 'on_readable: QTYPE mismatch; retry' );
+            $log->trace( 'handle_readable: QTYPE mismatch; retry' );
             redo;
         }
         if ( $question_rrs[0]->class() ne $qclass ) {
-            $log->trace( 'on_readable: QCLASS mismatch; retry' );
+            $log->trace( 'handle_readable: QCLASS mismatch; retry' );
             redo;
         }
         if ( lc( $question_rrs[0]->name() ) ne lc( $qname ) ) {
-            $log->trace( 'on_readable: QNAME mismatch; retry' );
+            $log->trace( 'handle_readable: QNAME mismatch; retry' );
             redo;
         }
 
@@ -367,7 +367,7 @@ sub on_readable {
     } ## end while ( $self->{_active}->...)
 
     return @responses;
-} ## end sub on_readable
+} ## end sub handle_readable
 
 =head1 LOGGING
 
@@ -383,7 +383,7 @@ happens.
 
 =item * Provide a nonblocking UDP socket. IPv4 and IPv6 are supported.
 
-=item * Use C<want_write> and C<want_read> to decide when to call the
+=item * Use C<send_queue_len> and C<inflight_count> to decide when to call the
 corresponding handlers from your event loop.
 
 =item * QIDs are caller-managed. Ensure QID uniqueness across all outstanding

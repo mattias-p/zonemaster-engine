@@ -20,8 +20,8 @@ use Zonemaster::Engine::Async qw( pack_sockaddr );
 use Zonemaster::Engine::Async::Query;
 use Zonemaster::Engine::Async::UDPTransport;
 
-use constant MAX_RECV_HINT => 65535;
-use constant DNS_PORT      => 53;
+use constant MAX_RECV_BUFSIZE => 65535;
+use constant DNS_PORT         => 53;
 
 sub mk_recv_err {
     my ( $errno, $name ) = @_;
@@ -29,7 +29,7 @@ sub mk_recv_err {
     return {
         name   => $name,
         method => 'recv',
-        args   => [ ignore(), MAX_RECV_HINT ],
+        args   => [ ignore(), MAX_RECV_BUFSIZE ],
         do     => sub { $ERRNO = $errno; undef },
     };
 }
@@ -42,7 +42,7 @@ sub mk_recv_data {
     return {
         name   => $name,
         method => 'recv',
-        args   => [ ignore(), MAX_RECV_HINT ],
+        args   => [ ignore(), MAX_RECV_BUFSIZE ],
         do     => sub {
             $_[0] = $message;
             $sockaddr;
@@ -93,18 +93,18 @@ sub prep_send {
     BAIL_OUT( 'prep: socket script not empty' )
       if !$ctl->is_exhausted();
     BAIL_OUT( 'prep: unexpectedly waiting to send' )
-      if $sut->want_write;
+      if $sut->send_queue_len;
 
     $sut->enqueue( to_query( %query ) );
     $ctl->expect( mk_send_ok( \%query, 'prep: send' ) );
-    $sut->on_writable;
+    $sut->handle_writable;
 
     BAIL_OUT( 'prep: query not sent' )
       if !$ctl->is_exhausted();
     BAIL_OUT( 'prep: not waiting to receive' )
-      if !$sut->want_read;
+      if !$sut->inflight_count;
     BAIL_OUT( 'prep: unexpectedly waiting to send' )
-      if $sut->want_write;
+      if $sut->send_queue_len;
 
     return;
 } ## end sub prep_send
@@ -124,8 +124,8 @@ sub test_wants {
     };
 
     my $got = {
-        want_read  => $sut->want_read,
-        want_write => $sut->want_write,
+        want_read  => $sut->inflight_count,
+        want_write => $sut->send_queue_len,
     };
 
     $name //= sprintf( 'should have %d pending and %d active exchanges', $args->{write} // 0, $args->{read} // 0 );
@@ -177,7 +177,7 @@ sub to_query {
     return ( $qid, $query );
 }
 
-subtest 'errnos causing on_writable to throw' => sub {
+subtest 'errnos causing handle_writable to throw' => sub {
     my @send_fatal_errnos = qw(
       EACCES
       EADDRNOTAVAIL
@@ -203,15 +203,15 @@ subtest 'errnos causing on_writable to throw' => sub {
             $ctl->expect( mk_send_err( {%QUERY_1}, $errno, "send(query 1)->$mnemonic" ) );
 
             throws_ok {
-                $sut->on_writable();
+                $sut->handle_writable();
             }
-            qr/\Q($numeric)\E/, "on_writable should throw on $mnemonic";
+            qr/\Q($numeric)\E/, "handle_writable should throw on $mnemonic";
             $ctl->done_ok( "socket should receive all expected calls" );
         };
     }
 };
 
-subtest 'errnos causing on_readable to throw' => sub {
+subtest 'errnos causing handle_readable to throw' => sub {
     my @recv_fatal_errnos = qw(
       EINVAL
       ENETDOWN
@@ -229,7 +229,7 @@ subtest 'errnos causing on_readable to throw' => sub {
 
             $ctl->expect( mk_recv_err( $errno, "recv()->$mnemonic" ), );
             throws_ok {
-                $sut->on_readable();
+                $sut->handle_readable();
             }
             qr/\Q($numeric)\E/, "$mnemonic is fatal";
 
@@ -238,7 +238,7 @@ subtest 'errnos causing on_readable to throw' => sub {
     }
 };
 
-subtest 'errnos causing on_writable to return' => sub {
+subtest 'errnos causing handle_writable to return' => sub {
     my @retry_send_errnos = qw(
       EAGAIN
       ENOBUFS
@@ -257,7 +257,7 @@ subtest 'errnos causing on_writable to return' => sub {
             $ctl->expect( mk_send_err( {%QUERY_1}, $errno, "senf(query 1)->$mnemonic" ), );
 
             $sut->enqueue( to_query( %QUERY_1 ) );
-            $sut->on_writable();
+            $sut->handle_writable();
 
             $ctl->done_ok( "no more attempts to send after $mnemonic" );
             test_wants( $sut, { write => 1 }, 'should still want write' );
@@ -265,10 +265,9 @@ subtest 'errnos causing on_writable to return' => sub {
     }
 };
 
-subtest 'errnos causing on_readable to return' => sub {
+subtest 'errnos causing handle_readable to return' => sub {
     my @retry_recv_errnos = qw(
       EAGAIN
-      ENOBUFS
       EWOULDBLOCK
     );
 
@@ -282,7 +281,7 @@ subtest 'errnos causing on_readable to return' => sub {
             my ( $sut, $ctl ) = setup( \%QUERY_1 );
 
             $ctl->expect( mk_recv_err( $errno, "recv()->$mnemonic" ) );
-            my @responses = pairmap { $a => $b->data } $sut->on_readable();
+            my @responses = pairmap { $a => $b->data } $sut->handle_readable();
 
             $ctl->done_ok( "no more attempts to recv after $mnemonic" );
             test_wants( $sut, { read => 1 }, 'still awaiting responses' );
@@ -291,7 +290,7 @@ subtest 'errnos causing on_readable to return' => sub {
     }
 };
 
-subtest 'on_writable should retry on EINTR' => sub {
+subtest 'handle_writable should retry on EINTR' => sub {
     my ( $ctl, $socket ) = new_scripted_mock( qw( send recv ) );
     my $sut = Zonemaster::Engine::Async::UDPTransport->new( $socket );
     $sut->enqueue( to_query( %QUERY_1 ) );
@@ -300,40 +299,40 @@ subtest 'on_writable should retry on EINTR' => sub {
     $ctl->expect( mk_send_err( {%QUERY_1}, &EINTR,       'send(query 1)->EINTR' ) );
     $ctl->expect( mk_send_err( {%QUERY_1}, &EINTR,       'send(query 1)->EINTR' ) );
     $ctl->expect( mk_send_err( {%QUERY_1}, &EWOULDBLOCK, 'send(query 1)->EWOULDBLOCK' ), );
-    $sut->on_writable();
+    $sut->handle_writable();
 
     $ctl->done_ok( 'no more attempts to send after EWOULDBLOCK' );
     test_wants( $sut, { write => 1 }, 'should still want write' );
 };
 
-subtest 'on_readable should retry on EINTR' => sub {
+subtest 'handle_readable should retry on EINTR' => sub {
     my ( $sut, $ctl ) = setup( \%QUERY_1 );
 
     $ctl->expect( mk_recv_err( &EINTR,       'recv()->EINTR' ) );
     $ctl->expect( mk_recv_err( &EINTR,       'recv()->EINTR' ) );
     $ctl->expect( mk_recv_err( &EINTR,       'recv()->EINTR' ) );
     $ctl->expect( mk_recv_err( &EWOULDBLOCK, 'recv()->EWOULDBLOCK' ) );
-    my @responses = map { $_->data } $sut->on_readable();
+    my @responses = map { $_->data } $sut->handle_readable();
 
     $ctl->done_ok();
     test_wants( $sut, { read => 1 }, 'still awaiting responses' );
     is_with_context \@responses, [], 'no responses were returned';
 };
 
-subtest 'on_readable rejects empty response' => sub {
+subtest 'handle_readable rejects empty response' => sub {
     my ( $sut, $ctl ) = setup( \%QUERY_1 );
 
     $ctl->expect( mk_recv_data( $QUERY_1{server}, '', 'ignore empty response' ) );
     $ctl->expect( mk_recv_err( &EWOULDBLOCK, 'recv()->EWOULDBLOCK' ) );
 
-    my @responses = map { $_->data } $sut->on_readable();
+    my @responses = map { $_->data } $sut->handle_readable();
 
     $ctl->done_ok();
     test_wants( $sut, { read => 1 }, 'still awaiting responses' );
     is_with_context \@responses, [], 'no responses were returned';
 };
 
-subtest 'on_readable rejects unparsable response' => sub {
+subtest 'handle_readable rejects unparsable response' => sub {
     my ( $sut, $ctl ) = setup( \%QUERY_1 );
 
     my $message = substr( dns_msg( %RESPONSE_1 ), 0, 13 );
@@ -341,14 +340,14 @@ subtest 'on_readable rejects unparsable response' => sub {
     $ctl->expect( mk_recv_data( $QUERY_1{server}, $message, 'reject unparsable response' ) );
     $ctl->expect( mk_recv_err( &EWOULDBLOCK, 'nothing more to recv, presently' ) );
 
-    my @responses = map { $_->data } $sut->on_readable();
+    my @responses = map { $_->data } $sut->handle_readable();
 
     $ctl->done_ok();
     test_wants( $sut, { read => 1 }, 'still awaiting responses' );
     is_with_context \@responses, [], 'no responses were returned';
 };
 
-subtest 'on_readable rejects questionless response' => sub {
+subtest 'handle_readable rejects questionless response' => sub {
     my ( $sut, $ctl ) = setup( \%QUERY_1 );
 
     my $flags   = 0x8000;                                                        # QR=1
@@ -357,137 +356,137 @@ subtest 'on_readable rejects questionless response' => sub {
     $ctl->expect( mk_recv_data( $QUERY_1{server}, $message, 'reject questionless response' ) );
     $ctl->expect( mk_recv_err( &EWOULDBLOCK, 'nothing more to recv, presently' ) );
 
-    my @responses = map { $_->data } $sut->on_readable();
+    my @responses = map { $_->data } $sut->handle_readable();
 
     $ctl->done_ok();
     test_wants( $sut, { read => 1 }, 'still awaiting responses' );
     is_with_context \@responses, [], 'no responses were returned';
 };
 
-subtest 'on_readable rejects response with QR=0' => sub {
+subtest 'handle_readable rejects response with QR=0' => sub {
     my ( $sut, $ctl ) = setup( \%QUERY_1 );
 
     $ctl->expect( mk_recv_ok( { %RESPONSE_1, qr => 0 }, 'ignore response with QR=0' ) );
     $ctl->expect( mk_recv_err( &EWOULDBLOCK, 'nothing more to recv, presently' ) );
 
-    my @responses = map { $_->data } $sut->on_readable();
+    my @responses = map { $_->data } $sut->handle_readable();
 
     $ctl->done_ok();
     test_wants( $sut, { read => 1 }, 'still awaiting responses' );
     is_with_context \@responses, [], 'no responses were returned';
 };
 
-subtest 'on_readable rejects response with deviating QID' => sub {
+subtest 'handle_readable rejects response with deviating QID' => sub {
     my ( $sut, $ctl ) = setup( \%QUERY_1 );
 
     $ctl->expect( mk_recv_ok( { %RESPONSE_1, qid => 4 }, 'ignore response with deviating QID' ) );
     $ctl->expect( mk_recv_err( &EWOULDBLOCK, 'nothing more to recv, presently' ) );
 
-    my @responses = map { $_->data } $sut->on_readable();
+    my @responses = map { $_->data } $sut->handle_readable();
 
     $ctl->done_ok();
     test_wants( $sut, { read => 1 }, 'still awaiting responses' );
     is_with_context \@responses, [], 'no responses were returned';
 };
 
-subtest 'on_readable rejects mismatched QNAME after matched QID' => sub {
+subtest 'handle_readable rejects mismatched QNAME after matched QID' => sub {
     my ( $sut, $ctl ) = setup( \%QUERY_1 );
 
     $ctl->expect( mk_recv_ok( { %RESPONSE_1, qname => '4.test' }, 'ignore response with deviating QNAME' ) );
     $ctl->expect( mk_recv_err( &EWOULDBLOCK, 'nothing more to recv, presently' ) );
 
-    my @responses = map { $_->data } $sut->on_readable();
+    my @responses = map { $_->data } $sut->handle_readable();
 
     $ctl->done_ok();
     test_wants( $sut, { read => 1 }, 'still awaiting responses' );
     is_with_context \@responses, [], 'no responses were returned';
 };
 
-subtest 'on_readable rejects mismatched QTYPE after matched QID' => sub {
+subtest 'handle_readable rejects mismatched QTYPE after matched QID' => sub {
     my ( $sut, $ctl ) = setup( \%QUERY_1 );
 
     $ctl->expect( mk_recv_ok( { %RESPONSE_1, qtype => 'AAAA' }, 'ignore response with deviating QTYPE' ) );
     $ctl->expect( mk_recv_err( &EWOULDBLOCK, 'nothing more to recv, presently' ) );
 
-    my @responses = map { $_->data } $sut->on_readable();
+    my @responses = map { $_->data } $sut->handle_readable();
 
     $ctl->done_ok();
     test_wants( $sut, { read => 1 }, 'still awaiting responses' );
     is_with_context \@responses, [], 'no responses were returned';
 };
 
-subtest 'on_readable rejects mismatched QCLASS after matched QID' => sub {
+subtest 'handle_readable rejects mismatched QCLASS after matched QID' => sub {
     my ( $sut, $ctl ) = setup( \%QUERY_1 );
 
     $ctl->expect( mk_recv_ok( { %RESPONSE_1, qclass => 'CH' }, 'ignore response with deviating QCLASS' ) );
     $ctl->expect( mk_recv_err( &EWOULDBLOCK, 'nothing more to recv, presently' ) );
 
-    my @responses = map { $_->data } $sut->on_readable();
+    my @responses = map { $_->data } $sut->handle_readable();
 
     $ctl->done_ok();
     test_wants( $sut, { read => 1 }, 'still awaiting responses' );
     is_with_context \@responses, [], 'no responses were returned';
 };
 
-subtest 'on_readable handles response with deviating server' => sub {
+subtest 'handle_readable handles response with deviating server' => sub {
     my ( $sut, $ctl ) = setup( \%QUERY_1 );
 
     $ctl->expect( mk_recv_ok( { %RESPONSE_1, server => $QUERY_4{server} }, 'ignore response with deviating server' ) );
     $ctl->expect( mk_recv_err( &EWOULDBLOCK, 'nothing more to recv, presently' ) );
 
-    my @responses = map { $_->data } $sut->on_readable();
+    my @responses = map { $_->data } $sut->handle_readable();
 
     $ctl->done_ok();
     test_wants( $sut, { read => 1 }, 'still awaiting responses' );
     is_with_context \@responses, [], 'no responses were returned';
 };
 
-subtest 'on_readable accepts case-variant QNAME' => sub {
+subtest 'handle_readable accepts case-variant QNAME' => sub {
     my ( $sut, $ctl ) = setup( \%QUERY_1 );
 
     $ctl->expect( mk_recv_ok( { %RESPONSE_1, qname => '1.TEST' }, 'case variant' ) );
-    my @responses = map { $_->data } $sut->on_readable();
+    my @responses = map { $_->data } $sut->handle_readable();
 
     cmp_ok scalar( @responses ), '==', 1, 'accepted';
     is_with_context \@responses, [ dns_msg( %RESPONSE_1, qname => '1.TEST' ) ], 'response 1 was returned';
 };
 
-subtest 'on_readable accepts TC=1' => sub {
+subtest 'handle_readable accepts TC=1' => sub {
     my ( $sut, $ctl ) = setup( \%QUERY_1 );
 
     $ctl->expect( mk_recv_ok( { %RESPONSE_1, tc => 1 }, 'truncation' ) );
-    my @responses = map { $_->data } $sut->on_readable();
+    my @responses = map { $_->data } $sut->handle_readable();
 
     is_with_context \@responses, [ dns_msg( %RESPONSE_1, tc => 1 ) ], 'response 1 was returned';
 };
 
-subtest 'drop ignores unrecognized exhanges' => sub {
+subtest 'cancel ignores unrecognized exhanges' => sub {
     my ( $sut, $ctl ) = setup();
 
-    $sut->drop( $QUERY_1{qid} );
+    $sut->cancel( $QUERY_1{qid} );
     test_wants( $sut, {} );
 };
 
-subtest 'drop removes pending exhanges' => sub {
+subtest 'cancel removes pending exhanges' => sub {
     my ( $sut, $ctl ) = setup();
 
     $sut->enqueue( to_query( %QUERY_1 ) );
     $sut->enqueue( to_query( %QUERY_2 ) );
-    $sut->drop( $QUERY_1{qid} );
+    $sut->cancel( $QUERY_1{qid} );
     test_wants( $sut, { write => 1 } );
 };
 
-subtest 'drop removes pending exhanges' => sub {
+subtest 'cancel removes pending exhanges' => sub {
     my ( $sut, $ctl ) = setup();
 
     $ctl->expect( mk_send_ok( \%QUERY_1 ) );
     $ctl->expect( mk_send_ok( \%QUERY_2 ) );
     $sut->enqueue( to_query( %QUERY_1 ) );
     $sut->enqueue( to_query( %QUERY_2 ) );
-    $sut->on_writable();
+    $sut->handle_writable();
     $ctl->done_ok;
 
-    $sut->drop( $QUERY_1{qid} );
+    $sut->cancel( $QUERY_1{qid} );
     test_wants( $sut, { read => 1 } );
 };
 
@@ -505,51 +504,51 @@ subtest 'a sequence' => sub {
 
     test_wants( $sut, { write => 4 }, 'should want write on single socket for multiple messages' );
 
-    note 'on_writable sends request';
+    note 'handle_writable sends request';
     $ctl->expect( mk_send_ok( {%QUERY_1}, 'query 1' ) );
     $ctl->expect( mk_send_err( {%QUERY_2}, &EWOULDBLOCK, 'attempt to send query 2' ) );
 
-    $sut->on_writable();
+    $sut->handle_writable();
 
     $ctl->done_ok( 'no more attempt to write after EWOULDBLOCK' );
     test_wants( $sut, { write => 3, read => 1 }, 'should still want write, but now also read' );
 
-    note 'on_writable sends multiple requests';
+    note 'handle_writable sends multiple requests';
     $ctl->expect( mk_send_ok( {%QUERY_2}, 'query 2' ) );
     $ctl->expect( mk_send_ok( {%QUERY_3}, 'query 3' ) );
     $ctl->expect( mk_send_ok( {%QUERY_4}, 'query 4' ) );
 
-    $sut->on_writable();
+    $sut->handle_writable();
 
     $ctl->done_ok( 'should not attempt to write after sending all requests' );
     test_wants( $sut, { read => 4 }, 'should want read, but not write after sending all requests' );
 
-    note 'on_readable handles responses';
+    note 'handle_readable handles responses';
     $ctl->expect( mk_recv_ok( {%RESPONSE_1}, 'accept one response' ) );
     $ctl->expect( mk_recv_err( &EWOULDBLOCK, 'return on EWOULDBLOCK' ) );
 
-    my @responses1 = map { $_->data } $sut->on_readable();
+    my @responses1 = map { $_->data } $sut->handle_readable();
 
     $ctl->done_ok();
     test_wants( $sut, { read => 3 }, 'should want to read more responses' );
     is_with_context \@responses1, [ dns_msg( %RESPONSE_1 ) ], 'response 1 was returned';
 
-    note 'on_readable handles multiple responses';
+    note 'handle_readable handles multiple responses';
     $ctl->expect( mk_recv_ok( {%RESPONSE_3}, 'accept one response' ) );
     $ctl->expect( mk_recv_ok( {%RESPONSE_2}, 'accept another response' ) );
     $ctl->expect( mk_recv_err( &EWOULDBLOCK, 'return on EWOULDBLOCK' ) );
 
-    my @responses2 = map { $_->data } $sut->on_readable();
+    my @responses2 = map { $_->data } $sut->handle_readable();
 
     $ctl->done_ok();
     test_wants( $sut, { read => 1 }, 'should want to read more responses' );
     is_with_context \@responses2, [ dns_msg( %RESPONSE_3 ), dns_msg( %RESPONSE_2 ) ], 'responses 3 and 2 were returned';
 
-    note 'on_readable stops waiting to read after last response';
+    note 'handle_readable stops waiting to read after last response';
     $ctl->expect(
         mk_recv_ok( {%RESPONSE_4}, 'accept response with qr=1 and matching (server, qid, qname, qtype, qclass)' ) );
 
-    my @responses3 = map { $_->data } $sut->on_readable();
+    my @responses3 = map { $_->data } $sut->handle_readable();
 
     is_with_context \@responses3, [ dns_msg( %RESPONSE_4 ) ], 'response 4 was returned';
     $ctl->done_ok();

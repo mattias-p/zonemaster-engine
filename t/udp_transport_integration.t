@@ -72,17 +72,17 @@ my @cases = (
 for my $c ( @cases ) {
     $sut->enqueue( to_query( $c->%* ) );
 }
-is( $sut->want_write, 2, 'want_write reflects pending=2' );
+is( $sut->send_queue_len, 2, 'send_queue_len reflects pending=2' );
 
 # Send
-$sut->on_writable;
-is( $sut->want_write, 0, 'pending drained after on_writable' );
+$sut->handle_writable;
+is( $sut->send_queue_len, 0, 'pending drained after handle_writable' );
 
 # Poll for responses
 my @got;
 my $deadline = time() + 3;    # 3s safety
 while ( time() < $deadline ) {
-    my @responses = $sut->on_readable;
+    my @responses = $sut->handle_readable;
     push @got, @responses if @responses;
     last if @got == 2;
     usleep 50_000;
@@ -99,7 +99,7 @@ for my $pkt ( @got ) {
 
 ok( $seen{'example.com.'} && $seen{'example.net.'}, 'both question names echoed' );
 
-is( $sut->want_read, 0, 'no active after responses' );
+is( $sut->inflight_count, 0, 'no active after responses' );
 
 # ---- Cleanup
 kill 'TERM', $pid;
