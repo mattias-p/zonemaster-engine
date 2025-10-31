@@ -6,10 +6,13 @@ use Carp qw( croak );
 use English;
 use Errno qw( EINTR ETIMEDOUT );
 use IO::Select;
-use List::Util qw( max min pairmap );
-use Log::Any   qw( $log );
+use IO::Socket::INET;
+use List::Util  qw( max min pairmap );
+use Log::Any    qw( $log );
+use Time::HiRes qw( clock_gettime CLOCK_MONOTONIC );
 
 use Zonemaster::Engine::Async qw( errno_names );
+use Zonemaster::Engine::Async::UDPTransport;
 
 sub new {
     my ( $class, %args ) = @_;
@@ -17,12 +20,16 @@ sub new {
     my (    #
         $exchange_timeout,
         $mono_time,
+        $qid_allocator,
+        $select_fn,
         $transport_factory,
       )
       = delete @args{
         qw(
           exchange_timeout
           mono_time
+          qid_allocator
+          select_fn
           transport_factory
         )
       };
@@ -33,18 +40,19 @@ sub new {
     if ( !defined $exchange_timeout ) {
         croak 'undefined exchange timeout';
     }
-    if ( !defined $mono_time ) {
-        croak 'undefined mono time';
-    }
-    if ( !defined $transport_factory ) {
-        croak 'undefined transport factory';
-    }
+
+    $mono_time         //= \&_default_mono_time;
+    $qid_allocator     //= \&_default_qid_allocator;
+    $select_fn         //= \&_default_select_fn;
+    $transport_factory //= \&_default_transport_factory;
 
     my $obj = {
         _deadlines         => {},
         _udp               => undef,
         _exchange_timeout  => $exchange_timeout,
         _mono_time         => $mono_time,
+        _qid_allocator     => $qid_allocator,
+        _select_fn         => $select_fn,
         _transport_factory => $transport_factory,
     };
 
@@ -58,15 +66,7 @@ sub add_timeout {
         croak 'qid exhaustion';
     }
 
-    # Linearly walk the range of qids with a random step size from a random starting point
-    # until an available qid is found. An uninterrupted walk is guaranteed to visit all
-    # other QIDs before returning to the starting point because no odd numbers have any
-    # common divisor with the range size.
-    my $qid  = int( rand( 0x10000 ) );
-    my $step = int( rand( 0x10000 ) ) | 0x0001;
-    while ( exists $self->{_deadlines}{$qid} ) {
-        $qid = ( $qid + $step ) & 0xffff;
-    }
+    my $qid = $self->{_qid_allocator}( $self->{_deadlines} );
 
     my $deadline = $self->_now_mono + $timeout;
     $log->tracef( 'add_timeout: %f', $deadline );
@@ -74,13 +74,13 @@ sub add_timeout {
     $self->{_deadlines}{$qid} = $deadline;
 
     return $qid;
-} ## end sub add_timeout
+}
 
 sub add_request {
     my ( $self, $query ) = @_;
 
     if ( !defined $self->{_udp} ) {
-        $self->{_udp} = $self->{_transport_factory}->();
+        $self->{_udp} = $self->{_transport_factory}();
     }
 
     my $qid = $self->add_timeout( $self->{_exchange_timeout} );
@@ -124,7 +124,7 @@ sub poll_responses {
             scalar $want_write->handles, $timeout
         );
         local $ERRNO = 0;
-        if ( my ( $readable, $writable, undef ) = IO::Select->select( $want_read, $want_write, undef, $timeout ) ) {
+        if ( my ( $readable, $writable, undef ) = $self->{_select_fn}( $want_read, $want_write, $timeout ) ) {
             if ( $writable->@* ) {
                 $self->{_udp}->handle_writable;
             }
@@ -165,7 +165,41 @@ sub poll_responses {
 sub _now_mono {
     my ( $self ) = @_;
 
-    return $self->{_mono_time}->();
+    return $self->{_mono_time}();
+}
+
+sub _default_mono_time {
+    return clock_gettime( CLOCK_MONOTONIC );
+}
+
+sub _default_qid_allocator {
+    my ( $deadlines ) = @_;
+
+    # Linearly walk the range of qids with a random step size from a random starting point
+    # until an available qid is found. An uninterrupted walk is guaranteed to visit all
+    # other QIDs before returning to the starting point because no odd numbers have any
+    # common divisor with the range size.
+    my $qid  = int( rand( 0x10000 ) );
+    my $step = int( rand( 0x10000 ) ) | 0x0001;
+    while ( exists $deadlines->{$qid} ) {
+        $qid = ( $qid + $step ) & 0xffff;
+    }
+
+    return $qid;
+}
+
+sub _default_select_fn {
+    my ( $r, $w, $t ) = @_;
+
+    return IO::Select->select( $r, $w, undef, $t );
+}
+
+sub _default_transport_factory {
+    my $socket = IO::Socket::INET->new( Proto => 'udp' )
+      or croak "Cannot create socket UDP socket: $ERRNO";
+    $socket->blocking( 0 );
+
+    return Zonemaster::Engine::Async::UDPTransport->new( $socket );
 }
 
 1;
