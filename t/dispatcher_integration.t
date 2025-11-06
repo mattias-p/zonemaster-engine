@@ -6,73 +6,22 @@ use Test::More;
 use Errno qw( ETIMEDOUT );
 use IO::Socket::INET;
 use Log::Any::Adapter qw( MonoTimeStderr );
-use Time::HiRes       qw( clock_gettime CLOCK_MONOTONIC sleep );
+use Test::Nameserver;
+use Time::HiRes qw( clock_gettime CLOCK_MONOTONIC sleep );
 
 use Zonemaster::Engine::Async::Dispatcher;
 use Zonemaster::Engine::Async::UDPTransport;
 use Zonemaster::Engine::Async::Query;
-use Zonemaster::LDNS::Packet;
 
-# --- UDP test server: reply immediately to first query, reply late to second ---
-my $server = IO::Socket::INET->new(
-    Proto     => 'udp',
-    LocalAddr => '127.0.0.1',
-    LocalPort => 0,
-) or plan skip_all => 'Cannot create UDP server socket';
+my ( $ns, $server_port ) = Test::Nameserver::start(
+    mode     => 'delay_second',
+    delay_ms => 600,
+);
 
-$server->blocking( 0 );
-my $server_port = $server->sockport;
-
-my $child = fork();
-defined $child or plan skip_all => 'fork failed';
-
-if ( $child == 0 ) {
-    $SIG{TERM} = sub { exit 0 };
-    $SIG{ALRM} = sub { exit 0 };
-    alarm 8;    # test safety cap
-
-    my $replied_immediate = 0;
-    my ( $late_buf, $late_peer, $late_at );
-
-    while ( 1 ) {
-        my $rin = '';
-        vec( $rin, fileno( $server ), 1 ) = 1;
-        my $n = select( $rin, undef, undef, 0.01 );
-
-        if ( $n ) {
-            my $buf  = '';
-            my $peer = $server->recv( $buf, 65535 );
-            if ( $peer ) {
-                my $pkt = Zonemaster::LDNS::Packet->new_from_wireformat2( $buf );
-                if ( defined $pkt ) {
-                    if ( !$replied_immediate ) {
-                        $replied_immediate = 1;
-                        $pkt->qr( 1 );
-                        my $wire = $pkt->data;
-                        $server->send( $wire, 0, $peer );    # immediate response
-                    }
-                    else {
-                        $late_buf  = $buf;
-                        $late_peer = $peer;
-                        # send this response after dispatcher timeout so it is dropped
-                        $late_at = clock_gettime( CLOCK_MONOTONIC ) + 0.6;
-                    }
-                }
-            }
-        } ## end if ( $n )
-
-        if ( $late_buf && clock_gettime( CLOCK_MONOTONIC ) >= $late_at ) {
-            my $pkt2 = Zonemaster::LDNS::Packet->new_from_wireformat2( $late_buf );
-            if ( defined $pkt2 ) {
-                $pkt2->qr( 1 );
-                my $wire2 = $pkt2->data;
-                $server->send( $wire2, 0, $late_peer );    # late response
-            }
-            $late_buf = undef;                             # only once
-        }
-    } ## end while ( 1 )
-    exit 0;
-} ## end if ( $child == 0 )
+END {
+    $ns->stop_server
+      if defined $ns;
+}
 
 # --- Client side using Dispatcher + UDPTransport + Query ---
 
@@ -141,9 +90,5 @@ if ( @after_timeout == 2 ) {
 sleep 0.30;
 my @late = $dispatcher->poll_responses();
 is( scalar( @late ), 0, 'late response discarded (no matching active exchange)' );
-
-# Cleanup server process
-kill 'TERM', $child;
-waitpid( $child, 0 );
 
 done_testing();

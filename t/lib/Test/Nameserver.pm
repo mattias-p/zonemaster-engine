@@ -24,6 +24,7 @@ sub start {
         ReplyHandler => sub {
             my ( $qname, $qclass, $qtype, $peerhost, $query, $conn ) = @_;
             ++$count;
+            warn "got request $count";
 
             return if $mode eq 'drop_all';
             return if $mode eq 'drop_once' && $count == 1;
@@ -31,6 +32,8 @@ sub start {
             if ( $mode eq 'delay_second' && $count == 2 ) {
                 usleep( 1000 * $delay_ms );    # blocks server subprocess only
             }
+
+            warn "sending response $count";
 
             # Respond NOERROR with matching ID and question, zero answers.
             # This exercises your transport/dispatcher path without crafting wire bytes.
