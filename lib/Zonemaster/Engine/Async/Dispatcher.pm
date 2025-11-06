@@ -7,12 +7,15 @@ use English;
 use Errno qw( EINTR ETIMEDOUT );
 use IO::Select;
 use IO::Socket::INET;
-use List::Util  qw( max min pairmap );
-use Log::Any    qw( $log );
+use List::Util qw( max min pairmap );
+use Log::Any   qw( $log );
+use Role::Tiny::With;
 use Time::HiRes qw( clock_gettime CLOCK_MONOTONIC );
 
 use Zonemaster::Engine::Async qw( errno_names );
 use Zonemaster::Engine::Async::UDPTransport;
+
+with 'Zonemaster::Engine::Async::SessionRole';
 
 sub new {
     my ( $class, %args ) = @_;
@@ -161,6 +164,10 @@ sub poll_responses {
 
     return @results;
 } ## end sub poll_responses
+
+sub tick {
+    goto &poll_responses;
+}
 
 sub _now_mono {
     my ( $self ) = @_;

@@ -95,6 +95,73 @@ sub expect {
     return $self;
 }
 
+package EnsambleActor;
+use v5.26;
+use warnings;
+
+use Carp qw( croak );
+use Readonly;
+use Types::Standard qw( Any Str );
+
+Readonly our %arg_validators => {
+    name     => Str,
+    adapter  => Str,
+    instance => Any,
+};
+Readonly our %expect_validators => {};
+
+sub new {
+    my ( $class, %adapters ) = @_;
+
+    my $obj = {};
+    $obj->{_actors}   = { ensamble => $obj };
+    $obj->{_adapters} = \%adapters;
+
+    return bless $obj, $class;
+}
+
+sub perform {
+    my ( $self, $verb, %args ) = @_;
+
+    if ( $verb eq 'add_actor' ) {
+        return $self->_add_actor( %args );
+    }
+
+    croak 'unrecognized verb';
+}
+
+sub _add_actor {
+    my ( $self, %args ) = @_;
+
+    my (    #
+        $name,
+        $adapter,
+        $instance,
+      )
+      = @args{
+        qw(
+          name
+          adapter
+          instance
+        )
+      };
+
+    if ( exists $self->{_actors}{$name} ) {
+        croak 'actor name already registered';
+    }
+
+    if ( !exists $self->{_adapters}{$adapter} ) {
+        croak 'unrecognized adapter';
+    }
+
+    $self->{_actors}{$name} = {
+        adapter  => $adapter,
+        instance => $instance,
+    };
+
+    return {};
+} ## end sub _add_actor
+
 package Registry;
 use v5.26;
 use warnings;
@@ -103,7 +170,7 @@ use Carp            qw( croak );
 use Exporter        qw( import );
 use Scalar::Util    qw( looks_like_number );
 use Type::Utils     qw( as declare where );
-use Types::Standard qw( ArrayRef Int Undef );
+use Types::Standard qw( Any ArrayRef Int Str Undef );
 
 our @EXPORT_OK = qw(
   msg
@@ -120,6 +187,14 @@ sub msg {
 }
 
 our %VERBS = (    #
+    'actor.new' => {
+        arg_validators => {
+            name     => Str,
+            adapter  => Str,
+            instance => Any,
+        },
+        expect_validators => {},
+    },
     'client.add_request' => {
         arg_validators => {
             _eids => ArrayRef [$Uint],
@@ -157,8 +232,14 @@ our %VERBS = (    #
 
 use Data::Dumper;
 
-sub scenario ($@) {
-    my ( $name, @steps ) = @_;
+our $ensamble;
+
+sub scenario (&) {
+    my $sub = @_;
+
+    local $ensamble;
+
+    $sub->();
 
     for my $step ( @steps ) {
         print Dumper ( $step );
