@@ -10,33 +10,31 @@ sub new {
 
     my (    #
         $origin,
-        $name,
+        $verb,
         $arg_validators,
         $expect_validators,
       )
       = delete @args{
         qw(
           origin
-          name
+          verb
           arg_validators
           expect_validators
         )
       };
 
-    defined $name && ref $name eq ''
-      or croak "name must be a defined scalar";
+    defined $verb && ref $verb eq ''
+      or croak "verb must be a defined scalar";
     ref $arg_validators eq 'HASH'
       or croak "arg_validators must be a HASH";
     ref $expect_validators eq 'HASH'
       or croak "expect_validators must be a HASH";
 
     my $obj = {
-        _origin            => $origin,
-        _name              => $name,
-        _args              => undef,
-        _arg_validators    => $arg_validators,
-        _expects           => undef,
-        _expect_validators => $expect_validators,
+        _origin  => $origin,
+        _verb    => $verb,
+        _args    => undef,
+        _expects => undef,
     };
     return bless $obj, $class;
 } ## end sub new
@@ -47,13 +45,13 @@ sub _validate {
     my %validators = $validators->%*;
     my @missing;
 
-    for my $name ( sort keys %validators ) {
-        if ( !exists $args{$name} ) {
-            push @missing, $name;
+    for my $verb ( sort keys %validators ) {
+        if ( !exists $args{$verb} ) {
+            push @missing, $verb;
             next;
         }
-        my $value = delete $args{$name};
-        $validators->{$name}->check( $prefix . $name, $value );
+        my $value = delete $args{$verb};
+        $validators->{$verb}->check( $prefix . $verb, $value );
     }
 
     if ( %args ) {
@@ -67,10 +65,18 @@ sub _validate {
     return;
 } ## end sub _validate
 
+sub verb_meta {
+    my ( $self ) = @_;
+
+    return $Registry::VERBS{ $self->{_verb} };
+}
+
 sub args {
     my ( $self, %args ) = @_;
 
-    _validate( "args.", $self->{_arg_validators}, %args );
+    my $validators = $self->verb_meta->{arg_validators};
+
+    _validate( "args.", $validators, %args );
 
     $self->{_args} = \%args;
 
@@ -80,7 +86,9 @@ sub args {
 sub expect {
     my ( $self, %args ) = @_;
 
-    _validate( "expect.", $self->{_expect_validators}, %args );
+    my $validators = $self->verb_meta->{expect_validators};
+
+    _validate( "expect.", $validators, %args );
 
     $self->{_expects} = \%args;
 
@@ -106,7 +114,7 @@ sub msg {
     return undef;
 }
 
-my %registry = (    #
+our %VERBS = (    #
     'client.add_request' => {
         arg_validators => {
             _eids => ArrayRef [$Uint],
@@ -142,6 +150,18 @@ my %registry = (    #
     },
 );
 
+use Data::Dumper;
+
+sub scenario {
+    my ( @steps ) = @_;
+
+    for my $step ( @steps ) {
+        print Dumper ( $step );
+    }
+
+    return;
+}
+
 our $steps;
 
 sub steps (&) {
@@ -153,9 +173,10 @@ sub steps (&) {
 
     for my $step ( $steps->@* ) {
         if ( !defined $step->{_args} ) {
-            if ( $step->{_arg_validators}->%* ) {
+            my $validators = $VERBS{ $step->{_verb} }{arg_validators};
+            if ( $validators->%* ) {
                 croak sprintf( '%s @ %s: missing args: ',
-                    $step->{_name}, $step->{_origin}, join( ', ', sort keys $step->{_arg_validators}->%* ) );
+                    $step->{_verb}, $step->{_origin}, join( ', ', sort keys $validators->%* ) );
             }
         }
         else {
@@ -163,9 +184,10 @@ sub steps (&) {
         }
 
         if ( !defined $step->{_expects} ) {
-            if ( $step->{_expect_validators}->%* ) {
+            my $validators = $VERBS{ $step->{_verb} }{expect_validators};
+            if ( $validators->%* ) {
                 croak sprintf( '%s @ %s: missing expect args: %s',
-                    $step->{_name}, $step->{_origin}, join( ', ', sort keys $step->{_expect_validators}->%* ) );
+                    $step->{_verb}, $step->{_origin}, join( ', ', sort keys $validators->%* ) );
             }
         }
         else {
@@ -177,7 +199,7 @@ sub steps (&) {
 } ## end sub steps (&)
 
 sub step {
-    my ( $name ) = @_;
+    my ( $verb ) = @_;
 
     if ( !defined $steps ) {
         croak 'must be called in the context of steps';
@@ -186,13 +208,13 @@ sub step {
     my ( undef, $file, $line ) = caller();
     my $origin = "$file:$line";
 
-    exists $registry{$name}
-      or croak 'unrecognized step name';
+    exists $VERBS{$verb}
+      or croak 'unrecognized step verb';
 
     my $step = Step->new(
         origin => $origin,
-        name   => $name,
-        $registry{$name}->%*,
+        verb   => $verb,
+        $VERBS{$verb}->%*,
     );
 
     push $steps->@*, $step;
@@ -216,7 +238,9 @@ sub msg {
     goto \&Registry::msg;
 }
 
-sub scenario { }
+sub scenario {
+    goto \&Registry::scenario;
+}
 
 scenario 'tc fallback' => steps {
     step( 'client.add_request' )
