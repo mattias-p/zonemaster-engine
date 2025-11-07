@@ -4,18 +4,18 @@ use warnings;
 
 use Data::Dump::Filtered       qw( dump_filtered );
 use Exporter                   qw( import );
-use My::Test::TokenAllocator   qw( $Token );
+use List::Util                 qw( pairmap );
+use My::Test::Msg              qw( $Msg );
+use My::Test::TokenAllocator   qw( $Uint16 );
 use Params::ValidationCompiler qw( validation_for );
 use Readonly;
 use Test2::API    qw( context_do );
 use Types::Common qw( ConsumerOf CycleTuple Dict HashRef InstanceOf NonEmptySimpleStr Tuple );
 
 our @EXPORT_OK = qw(
-  $Msg
   $Session
 );
 
-Readonly my $Msg     => InstanceOf ['Msg'];
 Readonly my $Session => ConsumerOf ['Zonemaster::Engine::Async::SessionRole'];
 
 sub new {
@@ -51,7 +51,7 @@ sub test_add_request {
         name          => 'test_add_request.expect',
         return_object => 1,
         params        => {
-            token => { type => $Token },
+            token => { type => $Uint16 },
         },
     );
 
@@ -100,7 +100,7 @@ sub test_tick {
         name          => 'test_tick.expect',
         return_object => 1,
         params        => {
-            events => { type => CycleTuple [ $Token, $Msg ] },
+            events => { type => CycleTuple [ $Uint16, $Msg ] },
         },
     );
 
@@ -111,6 +111,8 @@ sub test_tick {
     };
 
     my @events = $self->{_inner}->tick();
+
+    @events = pairmap { $a => My::Test::Msg->try_from_packet( $b ) } @events;
 
     my $call     = sprintf( "%s.tick%s", $self->{_name}, short( $named{args} ) );
     my $got      = short( { events => \@events } );
