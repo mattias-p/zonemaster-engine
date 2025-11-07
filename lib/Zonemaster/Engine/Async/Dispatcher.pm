@@ -14,6 +14,7 @@ use Time::HiRes qw( clock_gettime CLOCK_MONOTONIC );
 
 use Zonemaster::Engine::Async qw( errno_names );
 use Zonemaster::Engine::Async::UDPTransport;
+use Zonemaster::Engine::Async::TimeoutError;
 
 with 'Zonemaster::Engine::Async::SessionRole';
 
@@ -104,13 +105,13 @@ sub poll_responses {
     }
 
     my $want_read = IO::Select->new();
-    if ( $self->{_udp}->inflight_count ) {
+    if ( $self->{_udp}->want_read ) {
         $log->trace( 'poll_responses: want read' );
         $want_read->add( $self->{_udp}->io_handle );
     }
 
     my $want_write = IO::Select->new();
-    if ( $self->{_udp}->send_queue_len ) {
+    if ( $self->{_udp}->want_write ) {
         $log->trace( 'poll_responses: want write' );
         $want_write->add( $self->{_udp}->io_handle );
     }
@@ -159,7 +160,7 @@ sub poll_responses {
     for my $qid ( @expired ) {
         delete $self->{_deadlines}{$qid};
         $self->{_udp}->cancel( $qid );
-        push @results, ( $qid, &ETIMEDOUT );
+        push @results, ( $qid, Zonemaster::Engine::Async::TimeoutError->new() );
     }
 
     return @results;

@@ -10,13 +10,14 @@ use My::Test::TokenAllocator   qw( $Uint16 );
 use Params::ValidationCompiler qw( validation_for );
 use Readonly;
 use Test2::API    qw( context_do );
-use Types::Common qw( ConsumerOf CycleTuple Dict HashRef InstanceOf NonEmptySimpleStr Tuple );
+use Types::Common qw( ArrayRef ConsumerOf CycleTuple Dict HashRef InstanceOf NonEmptySimpleStr Tuple );
 
 our @EXPORT_OK = qw(
   $Session
 );
 
-Readonly my $Session => ConsumerOf ['Zonemaster::Engine::Async::SessionRole'];
+Readonly my $Session    => ConsumerOf ['Zonemaster::Engine::Async::SessionRole'];
+Readonly my $AsyncError => ConsumerOf ['Zonemaster::Engine::Async::ErrorRole'];
 
 sub new {
     my ( $class, $name, $inner ) = @_;
@@ -65,21 +66,14 @@ sub test_add_request {
 
     my $token = $self->{_inner}->add_request( $args->msg->to_query );
 
-    my $call     = sprintf( "%s.test_add_request%s", $self->{_name}, short( $named{args} ) );
-    my $got      = short( { token => $token } );
-    my $expected = short( $named{expect} );
+    my $call     = sprintf( "%s.test_add_request%s", $self->{_name}, describe( $named{args} ) );
+    my $got      = describe( { token => $token } );
+    my $expected = describe( $named{expect} );
 
     context_do {
         my $ctx = shift;
 
-        $ctx->ok(
-            $got eq $expected,
-            sprintf( "%s -> %s", $call, $expected ),
-            [    #
-                sprintf( "expected: %s", $expected ),
-                sprintf( "got:      %s", $got ),
-            ]
-        );
+        $ctx->ok( $got eq $expected, sprintf( "%s -> %s", $call, $expected ), [ sprintf( "got: %s", $got ), ] );
     };
 
     return;
@@ -100,7 +94,7 @@ sub test_tick {
         name          => 'test_tick.expect',
         return_object => 1,
         params        => {
-            events => { type => CycleTuple [ $Uint16, $Msg ] },
+            events => { type => ArrayRef [ Dict [ token => $Uint16, event => $Msg | $AsyncError ] ] },
         },
     );
 
@@ -112,30 +106,27 @@ sub test_tick {
 
     my @events = $self->{_inner}->tick();
 
-    @events = pairmap { $a => My::Test::Msg->try_from_packet( $b ) } @events;
+    @events = pairmap { { token => $a, event => My::Test::Msg->try_from_packet( $b ) } } @events;
 
-    my $call     = sprintf( "%s.tick%s", $self->{_name}, short( $named{args} ) );
-    my $got      = short( { events => \@events } );
-    my $expected = short( $named{expect} );
+    my $call     = sprintf( "%s.tick%s", $self->{_name}, describe( $named{args} ) );
+    my $got      = describe( { events => \@events } );
+    my $expected = describe( $named{expect} );
 
     context_do {
         my $ctx = shift;
 
-        $ctx->ok(
-            $got eq $expected,
-            sprintf( "%s -> %s", $call, $expected ),
-            [    #
-                sprintf( "expected: %s", $expected ),
-                sprintf( "got:      %s", $got ),
-            ]
-        );
+        my $ok = $got eq $expected;
+        $ctx->ok( $ok, sprintf( "%s -> %s", $call, $expected ), );
+        if ( !$ok ) {
+            $ctx->note( sprintf( "got: %s", $got ) );
+        }
     };
 
     return;
 
 } ## end sub test_tick
 
-sub short {
+sub describe {
     my ( $hash ) = @_;
 
     my $filter = sub {

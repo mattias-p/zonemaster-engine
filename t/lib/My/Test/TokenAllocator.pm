@@ -25,10 +25,10 @@ sub test_consumes_tokens {
     CodeRef->check( $callback );
     my @old_tokens = ( $mock_tokens // [] )->@*;
     local $mock_tokens = [ @old_tokens, $tokens->@* ];
-    my $name = sprintf( 'should consume injected tokens [%s]', join( ',', $tokens->@* ) );
-    run_subtest $name => sub {
+    run_subtest 'scope' => sub {
         context_do {
             my $ctx = shift;
+            $ctx->note( sprintf( 'tokens to consume in this scope: [%s]', join( ',', $tokens->@* ) ) );
             $callback->();
             my $injected_count  = scalar $tokens->@*;
             my $remaining_count = scalar $mock_tokens->@* - scalar @old_tokens;

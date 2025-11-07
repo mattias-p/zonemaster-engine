@@ -67,8 +67,10 @@ use English;
 use Errno    qw( EINTR EAGAIN EWOULDBLOCK ENOBUFS EBADMSG );
 use Log::Any qw( $log );
 use IO::Socket;
-
+use Role::Tiny::With          qw( with );
 use Zonemaster::Engine::Async qw( pack_sockaddr unpack_sockaddr );
+
+with 'Zonemaster::Engine::Async::TransportRole';
 
 use constant MAX_RECV_HINT   => 65535;
 use constant DNS_HEADER_SIZE => 12;
@@ -368,6 +370,18 @@ sub handle_readable {
 
     return @responses;
 } ## end sub handle_readable
+
+sub want_write {
+    my ( $self ) = @_;
+
+    return $self->{_pending}->@* > 0;
+}
+
+sub want_read {
+    my ( $self ) = @_;
+
+    return $self->{_active}->%* > 0;
+}
 
 =head1 LOGGING
 

@@ -3,19 +3,18 @@ use v5.26;
 use warnings;
 use Test::More;
 
-use My::Test::Msg;
+use My::Test::Clock  qw( test_advances_time );
+use My::Test::Msg    qw( msg );
+use My::Test::Select qw( select );
 use My::Test::SessionAdapter;
 use My::Test::TokenAllocator qw( alloc_mock_token test_consumes_tokens );
 use Zonemaster::Engine::Async::Dispatcher;
-
-sub msg {
-    return My::Test::Msg->new( @_ );
-}
 
 my $sut = My::Test::SessionAdapter->new(
     sut => Zonemaster::Engine::Async::Dispatcher->new(
         exchange_timeout => 5,
         qid_allocator    => \&alloc_mock_token,
+        select_fn        => \&select,
     )
 );
 
@@ -50,10 +49,12 @@ step(
 =cut
 
 test_consumes_tokens [2] => sub {
-    $sut->test_tick(
-        args   => {},
-        expect => { events => [] },
-    );
+    test_advances_time 0 => sub {
+        $sut->test_tick(
+            args   => {},
+            expect => { events => [] },
+        );
+    };
 };
 
 =pod
@@ -79,9 +80,12 @@ step(
 );
 =cut
 
-$sut->test_tick(
-    args   => {},
-    expect => { events => [ { token => 1, msg => msg( qid => 2, qname => 'example.com', qtype => 'SOA', qr => 1 ) } ] },
-);
+test_advances_time 0 => sub {
+    $sut->test_tick(
+        args   => {},
+        expect =>
+          { events => [ { token => 1, event => msg( qid => 2, qname => 'example.com', qtype => 'SOA', qr => 1 ) } ] },
+    );
+};
 
 done_testing;
