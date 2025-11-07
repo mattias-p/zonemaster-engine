@@ -21,12 +21,15 @@ sub msg {
     return My::Test::Msg->new( @_ );
 }
 
+use Data::Dumper;
+
 sub new {
     my ( $class, %args ) = @_;
 
     state $check = validation_for(
         name   => 'msg',
         params => {
+            peer  => { type => NonEmptySimpleStr },
             qname => { type => NonEmptySimpleStr },
             qtype => { type => Enum [qw( SOA )] },
             qid   => { type => $Uint16, default => 0 },
@@ -36,16 +39,18 @@ sub new {
 
     %args = $check->( %args );
 
+    $args{qr} = $args{qr} ? 1 : 0;
+
     my $obj = \%args;
 
     return bless $obj, $class;
-}
+} ## end sub new
 
 sub try_from_packet {
-    my ( $class, $packet ) = @_;
+    my ( $class, $packet, $peer ) = @_;
 
     if (   !blessed $packet
-        || !$packet->isa( 'Zonemaster::Engine::Packet' )
+        || !$packet->isa( 'Zonemaster::LDNS::Packet' )
         || $packet->question != 1
         || $packet->answer != 0
         || $packet->authority != 0
@@ -57,6 +62,7 @@ sub try_from_packet {
     my ( $question ) = $packet->question;
 
     return $class->new(
+        peer  => $peer,
         qname => $question->name,
         qtype => $question->type,
         qr    => $packet->qr,
@@ -69,25 +75,33 @@ sub to_query {
     return Zonemaster::Engine::Async::Query->new(
         qname  => $self->{qname},
         qtype  => $self->{qtype},
-        server => '10.10.10.53'
+        server => $self->{peer},
     );
 }
 
 sub short {
     my ( $self ) = @_;
 
-    my @args;
+    my %default = (
+        qid => 0,
+        qr  => 0,
+    );
 
-    push @args, sprintf( "qname => '%s'", $self->{qname} );
-    push @args, sprintf( "qtype => '%s'", $self->{qtype} );
-    if ( $self->{qid} != 0 ) {
-        push @args, sprintf( "qid => '%s'", $self->{qid} );
-    }
-    if ( $self->{qr} != 0 ) {
-        push @args, sprintf( "qr => '%s'", $self->{qr} );
+    my %remaining = $self->%*;
+
+    my @args;
+    push @args, sprintf( "peer => '%s'",  delete $remaining{peer} );
+    push @args, sprintf( "qname => '%s'", delete $remaining{qname} );
+    push @args, sprintf( "qtype => '%s'", delete $remaining{qtype} );
+
+    for my $key ( sort keys %remaining ) {
+        my $value = $remaining{$key};
+        if ( $value ne $default{$key} ) {
+            push @args, sprintf( "%s => '%s'", $key, $value );
+        }
     }
 
     return sprintf( 'msg(%s)', join( ', ', @args ) );
-}
+} ## end sub short
 
 1;

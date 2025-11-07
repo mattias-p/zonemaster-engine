@@ -203,11 +203,7 @@ sub _default_select_fn {
 }
 
 sub _default_transport_factory {
-    my $socket = IO::Socket::INET->new( Proto => 'udp' )
-      or croak "Cannot create socket UDP socket: $ERRNO";
-    $socket->blocking( 0 );
-
-    return Zonemaster::Engine::Async::UDPTransport->new( $socket );
+    return Zonemaster::Engine::Async::UDPTransport->new();
 }
 
 1;

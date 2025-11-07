@@ -8,19 +8,26 @@ use My::Test::Msg    qw( msg );
 use My::Test::Select qw( select );
 use My::Test::SessionAdapter;
 use My::Test::TokenAllocator qw( alloc_mock_token test_consumes_tokens );
+use My::Test::UdpNameserver;
 use Zonemaster::Engine::Async::Dispatcher;
+
+my $udp_ns  = My::Test::UdpNameserver->new( udp_ns => { listen => '127.0.1.53' } );
+my $dnsport = $udp_ns->port;
 
 my $sut = My::Test::SessionAdapter->new(
     sut => Zonemaster::Engine::Async::Dispatcher->new(
-        exchange_timeout => 5,
-        qid_allocator    => \&alloc_mock_token,
-        select_fn        => \&select,
+        exchange_timeout  => 5,
+        qid_allocator     => \&alloc_mock_token,
+        select_fn         => \&select,
+        transport_factory => sub {
+            return Zonemaster::Engine::Async::UDPTransport->new( undef, $dnsport );
+        },
     )
 );
 
 test_consumes_tokens [1] => sub {
     $sut->test_add_request(
-        args   => { msg   => msg( qname => 'example.', qtype => 'SOA' ) },
+        args   => { msg   => msg( peer => '127.0.1.53', qname => 'example.', qtype => 'SOA' ) },
         expect => { token => 1 },
     );
 };
@@ -30,20 +37,17 @@ $sut->test_tick(
     expect => { events => [] },
 );
 
+$udp_ns->test_recv(
+    args   => {},
+    expect => { msg => msg( peer => '127.0.0.1', qid => 1, qname => 'example.', qtype => 'SOA' ) },
+);
+
 =pod
 # Receive UDP query with QID=1.
 step(
     actor  => 'udp_ns',
-    verb   => 'receive',
-    args   => {},
-    expect => { msg => msg( qid => 1, qname => 'example.com', qtype => 'SOA' ) },
-);
-
-# Receive UDP query with QID=1.
-step(
-    actor  => 'udp_ns',
     verb   => 'send',
-    args   => { msg => msg( qid => 1, qname => 'example.com', qtype => 'SOA', qr => 1, tc => 1 ) },
+    args   => { msg => msg( peer => '127.0.1.53', qid => 1, qname => 'example.', qtype => 'SOA', qr => 1, tc => 1 ) },
     expect => {},
 );
 =cut
@@ -69,13 +73,13 @@ step(
     actor  => 'tcp_ns',
     verb   => 'receive',
     args   => {},
-    expect => { msg => msg( qid => 2, qname => 'example.com', qtype => 'SOA' ) },
+    expect => { msg => msg( peer => '127.0.1.53', qid => 2, qname => 'example.', qtype => 'SOA' ) },
 );
 
 step(
     actor  => 'tcp_ns',
     verb   => 'send',
-    args   => { msg => msg( qid => 2, qname => 'example.com', qtype => 'SOA', qr => 1 ) },
+    args   => { msg => msg( peer => '127.0.1.53', qid => 2, qname => 'example.', qtype => 'SOA', qr => 1 ) },
     expect => {},
 );
 =cut
@@ -83,8 +87,14 @@ step(
 test_advances_time 0 => sub {
     $sut->test_tick(
         args   => {},
-        expect =>
-          { events => [ { token => 1, event => msg( qid => 2, qname => 'example.com', qtype => 'SOA', qr => 1 ) } ] },
+        expect => {
+            events => [
+                {
+                    token => 1,
+                    event => msg( peer => '127.0.1.53', qid => 2, qname => 'example.', qtype => 'SOA', qr => 1 )
+                }
+            ]
+        },
     );
 };
 

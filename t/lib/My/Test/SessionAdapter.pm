@@ -2,11 +2,11 @@ package My::Test::SessionAdapter;
 use v5.26;
 use warnings;
 
-use Data::Dump::Filtered       qw( dump_filtered );
 use Exporter                   qw( import );
 use List::Util                 qw( pairmap );
 use My::Test::Msg              qw( $Msg );
 use My::Test::TokenAllocator   qw( $Uint16 );
+use My::Test::Util             qw( describe );
 use Params::ValidationCompiler qw( validation_for );
 use Readonly;
 use Test2::API    qw( context_do );
@@ -80,6 +80,8 @@ sub test_add_request {
 
 } ## end sub test_add_request
 
+use Data::Dumper;
+
 sub test_tick {
     state $top = validation_for(
         name          => 'test_tick.top',
@@ -125,19 +127,5 @@ sub test_tick {
     return;
 
 } ## end sub test_tick
-
-sub describe {
-    my ( $hash ) = @_;
-
-    my $filter = sub {
-        my ( $ctx, $objref ) = @_;
-
-        return ( $ctx->is_blessed && $objref->can( 'short' ) )
-          ? { dump => $objref->short }
-          : ();
-    };
-
-    return dump_filtered( $hash, $filter );
-}
 
 1;

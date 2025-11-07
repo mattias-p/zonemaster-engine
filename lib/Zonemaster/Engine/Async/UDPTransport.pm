@@ -95,6 +95,12 @@ The caller is responsible to set the socket to nonblocking mode.
 sub new {
     my ( $class, $socket, $peerport ) = @_;
 
+    $socket //= do {
+        my $socket = IO::Socket::INET->new( Proto => 'udp' )
+          or croak "Cannot create socket UDP socket: $ERRNO";
+        $socket->blocking( 0 );
+        $socket;
+    };
     $peerport //= 53;
 
     my $obj = {
@@ -105,7 +111,7 @@ sub new {
     };
 
     return bless $obj, $class;
-}
+} ## end sub new
 
 =head1 METHODS
 
