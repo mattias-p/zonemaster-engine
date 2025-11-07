@@ -18,6 +18,7 @@ sub new {
     }
 
     my (    #
+        $proto,
         $server,
         $qname,
         $qtype,
@@ -33,6 +34,7 @@ sub new {
       )
       = delete @args{
         qw(
+          proto
           server
           qname
           qtype
@@ -62,15 +64,20 @@ sub new {
           : $EDNS_UDP_PAYLOAD_DEFAULT;
     }
 
+    $proto  //= 'udp';
     $qclass //= 'IN';
     $rd     //= 0;
     $qr     //= 0;
     $tc     //= 0;
 
-    $qclass = uc( $qclass );
+    $qname =~ s{(.)[.]$}{$1};
+    $qname  = lc( $qname );
     $qtype  = uc( $qtype );
+    $qclass = uc( $qclass );
+    $proto  = lc( $proto );
 
     my $obj = {
+        proto         => $proto,
         server        => $server,
         qname         => $qname,
         qtype         => $qtype,
@@ -92,6 +99,12 @@ sub server {
     my ( $self ) = @_;
 
     return $self->{server};
+}
+
+sub proto {
+    my ( $self ) = @_;
+
+    return $self->{proto};
 }
 
 sub mk_packet {
@@ -121,6 +134,12 @@ sub mk_wire {
     my ( $self, $qid ) = @_;
 
     return $self->mk_packet( $qid )->data;
+}
+
+sub with {
+    my ( $self, %overrides ) = @_;
+
+    return Zonemaster::Engine::Async::Query->new( $self->%*, %overrides );
 }
 
 1;

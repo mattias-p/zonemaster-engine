@@ -10,7 +10,7 @@ use POSIX                      qw( :sys_wait_h );
 use Test2::API                 qw( context_do );
 use Time::HiRes                qw( time );
 use Types::Common              qw( Dict HashRef );
-use Zonemaster::Engine::Async  qw( unpack_sockaddr );
+use Zonemaster::Engine::Async  qw( pack_sockaddr unpack_sockaddr );
 
 sub new {
     my ( $class, $name, $opts ) = @_;
@@ -25,12 +25,13 @@ sub new {
     ) or die "server socket: $!";
 
     my $obj = {
-        _name => $name,
-        _sock => $sock,
+        _name     => $name,
+        _sock     => $sock,
+        _peerport => undef,
     };
 
     return bless $obj, $class;
-}
+} ## end sub new
 
 sub port {
     my ( $self ) = @_;
@@ -65,7 +66,9 @@ sub test_recv {
     if ( IO::Select->new( $self->{_sock} )->can_read ) {
         my $buffer = '';
         my $peer   = $self->{_sock}->recv( $buffer, 65535, 0 );
-        my ( undef, $ip ) = unpack_sockaddr( $peer );
+        my ( $port, $ip ) = unpack_sockaddr( $peer );
+
+        $self->{_peerport} = $port;
 
         $msg = Zonemaster::LDNS::Packet->new_from_wireformat2( $buffer );
         $msg =
@@ -114,8 +117,8 @@ sub test_send {
 
     my $msg;
     if ( IO::Select->new( $self->{_sock} )->can_write ) {
-        my $resp = $args->{msg}->to_query->mk_packet( $args->{msg}{qid} );
-        my $peer = $args->{peer};
+        my $resp = $args->{msg}->to_query->mk_packet( $args->{msg}{qid} )->data;
+        my $peer = pack_sockaddr( $args->{msg}{peer}, $self->{_peerport} );
         $self->{_sock}->send( $resp, 0, $peer );
     }
 

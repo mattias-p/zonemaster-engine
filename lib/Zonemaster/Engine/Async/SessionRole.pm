@@ -4,6 +4,10 @@ use warnings;
 
 use Role::Tiny qw( requires );
 
-requires qw( add_request add_timeout tick );
+requires qw(
+  add_request
+  add_timeout
+  tick
+);
 
 1;

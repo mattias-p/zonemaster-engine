@@ -79,6 +79,8 @@ sub to_query {
         qname  => $self->{qname},
         qtype  => $self->{qtype},
         server => $self->{peer},
+        qr     => $self->{qr},
+        tc     => $self->{tc},
     );
 }
 

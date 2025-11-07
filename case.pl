@@ -10,45 +10,48 @@ use My::Test::SessionAdapter;
 use My::Test::TokenAllocator qw( alloc_mock_token test_consumes_tokens );
 use My::Test::UdpNameserver;
 use Zonemaster::Engine::Async::Dispatcher;
+use Zonemaster::Engine::Async::TcTcpUpgrade;
 
 my $udp_ns  = My::Test::UdpNameserver->new( udp_ns => { listen => '127.0.1.53' } );
 my $dnsport = $udp_ns->port;
 
 my $sut = My::Test::SessionAdapter->new(
-    sut => Zonemaster::Engine::Async::Dispatcher->new(
-        exchange_timeout  => 5,
-        qid_allocator     => \&alloc_mock_token,
-        select_fn         => \&select,
-        transport_factory => sub {
-            return Zonemaster::Engine::Async::UDPTransport->new( undef, $dnsport );
-        },
+    sut => Zonemaster::Engine::Async::TcTcpUpgrade->new(
+        Zonemaster::Engine::Async::Dispatcher->new(
+            exchange_timeout  => 5,
+            qid_allocator     => \&alloc_mock_token,
+            select_fn         => \&select,
+            transport_factory => sub {
+                return Zonemaster::Engine::Async::UDPTransport->new( undef, $dnsport );
+            },
+        )
     )
 );
 
-test_consumes_tokens [1] => sub {
-    $sut->test_add_request(
-        args   => { msg   => msg( peer => '127.0.1.53', qname => 'example.', qtype => 'SOA' ) },
-        expect => { token => 1 },
+test_advances_time 0 => sub {
+    test_consumes_tokens [1] => sub {
+        $sut->test_add_request(
+            args   => { msg   => msg( peer => '127.0.1.53', qname => 'example.', qtype => 'SOA' ) },
+            expect => { token => 1 },
+        );
+    };
+
+    $sut->test_tick(
+        args   => {},
+        expect => { events => [] },
     );
-};
 
-$sut->test_tick(
-    args   => {},
-    expect => { events => [] },
-);
+    $udp_ns->test_recv(
+        args   => {},
+        expect => { msg => msg( peer => '127.0.0.1', qid => 1, qname => 'example.', qtype => 'SOA' ) },
+    );
 
-$udp_ns->test_recv(
-    args   => {},
-    expect => { msg => msg( peer => '127.0.0.1', qid => 1, qname => 'example.', qtype => 'SOA' ) },
-);
+    $udp_ns->test_send(
+        args => { msg => msg( peer => '127.0.0.1', qid => 1, qname => 'example.', qtype => 'SOA', qr => 1, tc => 1 ) },
+        expect => {},
+    );
 
-$udp_ns->test_send(
-    args   => { msg => msg( peer => '127.0.0.1', qid => 1, qname => 'example.', qtype => 'SOA', qr => 1, tc => 1 ) },
-    expect => {},
-);
-
-test_consumes_tokens [2] => sub {
-    test_advances_time 0 => sub {
+    test_consumes_tokens [2] => sub {
         $sut->test_tick(
             args   => {},
             expect => { events => [] },
