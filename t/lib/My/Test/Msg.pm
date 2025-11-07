@@ -34,12 +34,14 @@ sub new {
             qtype => { type => Enum [qw( SOA )] },
             qid   => { type => $Uint16, default => 0 },
             qr    => { type => Bool,    default => 0 },
+            tc    => { type => Bool,    default => 0 },
         },
     );
 
     %args = $check->( %args );
 
     $args{qr} = $args{qr} ? 1 : 0;
+    $args{tc} = $args{tc} ? 1 : 0;
 
     my $obj = \%args;
 
@@ -65,8 +67,9 @@ sub try_from_packet {
         peer  => $peer,
         qname => $question->name,
         qtype => $question->type,
-        qr    => $packet->qr,
         qid   => $packet->id,
+        qr    => $packet->qr,
+        tc    => $packet->tc,
     );
 } ## end sub try_from_packet
 
@@ -85,6 +88,7 @@ sub short {
     my %default = (
         qid => 0,
         qr  => 0,
+        tc  => 0,
     );
 
     my %remaining = $self->%*;

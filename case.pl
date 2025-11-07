@@ -42,15 +42,10 @@ $udp_ns->test_recv(
     expect => { msg => msg( peer => '127.0.0.1', qid => 1, qname => 'example.', qtype => 'SOA' ) },
 );
 
-=pod
-# Receive UDP query with QID=1.
-step(
-    actor  => 'udp_ns',
-    verb   => 'send',
-    args   => { msg => msg( peer => '127.0.1.53', qid => 1, qname => 'example.', qtype => 'SOA', qr => 1, tc => 1 ) },
+$udp_ns->test_send(
+    args   => { msg => msg( peer => '127.0.0.1', qid => 1, qname => 'example.', qtype => 'SOA', qr => 1, tc => 1 ) },
     expect => {},
 );
-=cut
 
 test_consumes_tokens [2] => sub {
     test_advances_time 0 => sub {
