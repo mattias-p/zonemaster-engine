@@ -22,7 +22,7 @@ my $sut = My::Test::SessionAdapter->new(
             qid_allocator     => \&alloc_mock_token,
             select_fn         => \&select,
             transport_factory => sub {
-                return Zonemaster::Engine::Async::UDPTransport->new( undef, $dnsport );
+                return Zonemaster::Engine::Async::UDPTransport->new( peerport => $dnsport );
             },
         )
     )

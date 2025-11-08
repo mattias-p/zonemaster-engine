@@ -35,7 +35,7 @@ my $client = IO::Socket::INET->new( Proto => 'udp' )
 IO::Handle::blocking( $client, 0 );
 
 # ---- System under test
-my $sut = Zonemaster::Engine::Async::UDPTransport->new( $client, $srv_port );
+my $sut = Zonemaster::Engine::Async::UDPTransport->new( socket => $client, peerport => $srv_port );
 
 # Two queries
 my @cases = (

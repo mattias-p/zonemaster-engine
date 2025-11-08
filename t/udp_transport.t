@@ -152,7 +152,7 @@ sub setup {
     my ( @queries ) = @_;
 
     my ( $ctl, $socket ) = new_scripted_mock( qw( send recv ) );
-    my $sut = Zonemaster::Engine::Async::UDPTransport->new( $socket );
+    my $sut = Zonemaster::Engine::Async::UDPTransport->new( socket => $socket );
     for my $query ( @queries ) {
         prep_send( $sut, $ctl, $query->%* );
     }
@@ -292,7 +292,7 @@ subtest 'errnos causing handle_readable to return' => sub {
 
 subtest 'handle_writable should retry on EINTR' => sub {
     my ( $ctl, $socket ) = new_scripted_mock( qw( send recv ) );
-    my $sut = Zonemaster::Engine::Async::UDPTransport->new( $socket );
+    my $sut = Zonemaster::Engine::Async::UDPTransport->new( socket => $socket );
     $sut->enqueue( to_query( %QUERY_1 ) );
 
     $ctl->expect( mk_send_err( {%QUERY_1}, &EINTR,       'send(query 1)->EINTR' ) );
