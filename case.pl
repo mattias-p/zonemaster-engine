@@ -36,7 +36,7 @@ test_advances_time 0 => sub {
         );
     };
 
-    $sut->test_tick(
+    $sut->test_step(
         args   => {},
         expect => { events => [] },
     );
@@ -52,7 +52,7 @@ test_advances_time 0 => sub {
     );
 
     test_consumes_tokens [2] => sub {
-        $sut->test_tick(
+        $sut->test_step(
             args   => {},
             expect => { events => [] },
         );
@@ -83,7 +83,7 @@ step(
 =cut
 
 test_advances_time 0 => sub {
-    $sut->test_tick(
+    $sut->test_step(
         args   => {},
         expect => {
             events => [

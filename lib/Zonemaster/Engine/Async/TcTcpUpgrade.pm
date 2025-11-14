@@ -36,10 +36,10 @@ sub add_request {
     return $token;
 }
 
-sub tick {
+sub step {
     my ( $self ) = @_;
 
-    my @events = $self->{_inner}->tick();
+    my @events = $self->{_inner}->step();
 
     my @results;
     while ( @events ) {
@@ -58,6 +58,6 @@ sub tick {
     }
 
     return @results;
-} ## end sub tick
+} ## end sub step
 
 1;

@@ -94,25 +94,25 @@ sub add_request {
     return $qid;
 }
 
-sub poll_responses {
+sub step {
     my ( $self ) = @_;
 
-    $log->tracef( 'poll_responses: enter (%d deadlines)', scalar keys $self->{_deadlines}->%* );
+    $log->tracef( 'step: enter (%d deadlines)', scalar keys $self->{_deadlines}->%* );
 
     if ( !$self->{_deadlines}->%* ) {
-        $log->trace( 'poll_responses: nothing to do' );
+        $log->trace( 'step: nothing to do' );
         return;
     }
 
     my $want_read = IO::Select->new();
     if ( $self->{_udp}->want_read ) {
-        $log->trace( 'poll_responses: want read' );
+        $log->trace( 'step: want read' );
         $want_read->add( $self->{_udp}->io_handle );
     }
 
     my $want_write = IO::Select->new();
     if ( $self->{_udp}->want_write ) {
-        $log->trace( 'poll_responses: want write' );
+        $log->trace( 'step: want write' );
         $want_write->add( $self->{_udp}->io_handle );
     }
 
@@ -122,11 +122,7 @@ sub poll_responses {
     do {
         my $now_mono = $self->_now_mono;
         my $timeout  = max 0, $earliest_deadline - $now_mono;
-        $log->tracef(
-            'poll_responses: select %d %d 0 %fs',
-            scalar $want_read->handles,
-            scalar $want_write->handles, $timeout
-        );
+        $log->tracef( 'step: select %d %d 0 %fs', scalar $want_read->handles, scalar $want_write->handles, $timeout );
         local $ERRNO = 0;
         if ( my ( $readable, $writable, undef ) = $self->{_select_fn}( $want_read, $want_write, $timeout ) ) {
             if ( $writable->@* ) {
@@ -142,7 +138,7 @@ sub poll_responses {
             }
         }
         elsif ( $!{EINTR} ) {
-            $log->trace( 'poll_response: EINTR' );
+            $log->trace( 'step: EINTR' );
             redo;
         }
         elsif ( $ERRNO ) {
@@ -155,7 +151,7 @@ sub poll_responses {
     my $now_mono = $self->_now_mono;
     my @expired  = pairmap { $b <= $now_mono ? ( $a ) : () } $self->{_deadlines}->%*;
 
-    $log->tracef( 'poll_response: %d results, %d expired', @results / 2, scalar @expired );
+    $log->tracef( 'step: %d results, %d expired', @results / 2, scalar @expired );
 
     for my $qid ( @expired ) {
         delete $self->{_deadlines}{$qid};
@@ -164,11 +160,7 @@ sub poll_responses {
     }
 
     return @results;
-} ## end sub poll_responses
-
-sub tick {
-    goto &poll_responses;
-}
+} ## end sub step
 
 sub _now_mono {
     my ( $self ) = @_;

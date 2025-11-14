@@ -82,9 +82,9 @@ sub test_add_request {
 
 use Data::Dumper;
 
-sub test_tick {
+sub test_step {
     state $top = validation_for(
-        name          => 'test_tick.top',
+        name          => 'test_step.top',
         return_object => 1,
         params        => {
             args   => { type => Dict [] },
@@ -93,7 +93,7 @@ sub test_tick {
     );
 
     state $expect_v = validation_for(
-        name          => 'test_tick.expect',
+        name          => 'test_step.expect',
         return_object => 1,
         params        => {
             events => { type => ArrayRef [ Dict [ token => $Uint16, event => $Msg | $AsyncError ] ] },
@@ -106,11 +106,11 @@ sub test_tick {
         $expect_v->( %{ $t->expect } );
     };
 
-    my @events = $self->{_inner}->tick();
+    my @events = $self->{_inner}->step();
 
     @events = pairmap { { token => $a, event => My::Test::Msg->try_from_packet( $b ) } } @events;
 
-    my $call     = sprintf( "%s.tick%s", $self->{_name}, describe( $named{args} ) );
+    my $call     = sprintf( "%s.step%s", $self->{_name}, describe( $named{args} ) );
     my $got      = describe( { events => \@events } );
     my $expected = describe( $named{expect} );
 
@@ -126,6 +126,6 @@ sub test_tick {
 
     return;
 
-} ## end sub test_tick
+} ## end sub test_step
 
 1;

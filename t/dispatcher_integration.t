@@ -1,94 +1,100 @@
-# t/async_dispatcher_timeout.t
+#!perl
 use v5.26;
-use strict;
+use warnings;
 use Test::More;
 
-use Errno qw( ETIMEDOUT );
-use IO::Socket::INET;
-use Log::Any::Adapter qw( MonoTimeStderr );
-use Test::Nameserver;
-use Time::HiRes qw( clock_gettime CLOCK_MONOTONIC sleep );
-
+use My::Test::Clock  qw( test_advances_time );
+use My::Test::Msg    qw( msg );
+use My::Test::Select qw( select );
+use My::Test::SessionAdapter;
+use My::Test::TokenAllocator qw( alloc_mock_token test_consumes_tokens );
+use My::Test::UdpNameserver;
 use Zonemaster::Engine::Async::Dispatcher;
-use Zonemaster::Engine::Async::UDPTransport;
-use Zonemaster::Engine::Async::Query;
+use Zonemaster::Engine::Async::TcTcpUpgrade;
 
-my ( $ns, $server_port ) = Test::Nameserver::start(
-    mode     => 'delay_second',
-    delay_ms => 600,
+my $udp_ns  = My::Test::UdpNameserver->new( udp_ns => { listen => '127.0.1.53' } );
+my $dnsport = $udp_ns->port;
+
+my $sut = My::Test::SessionAdapter->new(
+    sut => Zonemaster::Engine::Async::Dispatcher->new(
+        exchange_timeout  => 5,
+        qid_allocator     => \&alloc_mock_token,
+        select_fn         => \&select,
+        transport_factory => sub {
+            return Zonemaster::Engine::Async::UDPTransport->new( peerport => $dnsport );
+        },
+    )
 );
 
-END {
-    $ns->stop_server
-      if defined $ns;
-}
+test_consumes_tokens [1] => sub {
+    $sut->test_add_request(
+        args   => { msg   => msg( peer => '127.0.1.53', qname => 'example.', qtype => 'SOA' ) },
+        expect => { token => 1 },
+    );
+};
 
-# --- Client side using Dispatcher + UDPTransport + Query ---
+test_consumes_tokens [2] => sub {
+    $sut->test_add_request(
+        args   => { msg   => msg( peer => '127.0.1.53', qname => 'a.example.', qtype => 'A' ) },
+        expect => { token => 2 },
+    );
+};
 
-my $exchange_timeout = 0.30;    # seconds; late reply comes at ~0.6s
-
-my $dispatcher = Zonemaster::Engine::Async::Dispatcher->new(
-    exchange_timeout  => $exchange_timeout,
-    mono_time         => sub { clock_gettime( CLOCK_MONOTONIC ) },
-    transport_factory => sub {
-        my $client = IO::Socket::INET->new(
-            Proto     => 'udp',
-            LocalAddr => '127.0.0.1',
-        ) or die "Cannot create client UDP socket: $!";
-        $client->blocking( 0 );
-        return Zonemaster::Engine::Async::UDPTransport->new( $client, $server_port );
-    },
+$sut->test_step(
+    args   => {},
+    expect => { events => [] },
 );
 
-my $q1 = Zonemaster::Engine::Async::Query->new(
-    server => '127.0.0.1',
-    qname  => 'example.org',
-    qtype  => 'A',
+$udp_ns->test_recv(
+    args   => {},
+    expect => { msg => msg( peer => '127.0.0.1', qid => 1, qname => 'example.', qtype => 'SOA' ) },
 );
 
-my $q2 = Zonemaster::Engine::Async::Query->new(
-    server => '127.0.0.1',
-    qname  => 'iana.org',
-    qtype  => 'A',
+$udp_ns->test_recv(
+    args   => {},
+    expect => { msg => msg( peer => '127.0.0.1', qid => 2, qname => 'a.example.', qtype => 'A' ) },
 );
 
-my $qid1 = $dispatcher->add_request( $q1 );
-my $qid2 = $dispatcher->add_request( $q2 );
+$udp_ns->test_send(
+    args   => { msg => msg( peer => '127.0.0.1', qid => 1, qname => 'example.', qtype => 'SOA', qr => 1 ) },
+    expect => {},
+);
 
-ok( defined $qid1 && defined $qid2, 'qids allocated' );
-ok( $qid1 != $qid2,                 'qids are distinct' );
+test_advances_time 0 => sub {
+    test_consumes_tokens [] => sub {
+        $sut->test_step(
+            args   => {},
+            expect => {
+                events => [
+                    {
+                        token => 1,
+                        event => msg( peer => '127.0.1.53', qid => 1, qname => 'example.', qtype => 'SOA', qr => 1 )
+                    }
+                ]
+            },
+        );
+    };
+};
 
-# Drive the dispatcher until one response arrives or a hard cap is hit
-my $cap = clock_gettime( CLOCK_MONOTONIC ) + 2.0;
-my @first_res;
-while ( clock_gettime( CLOCK_MONOTONIC ) < $cap ) {
-    my @r = $dispatcher->poll_responses();
-    if ( @r ) { @first_res = @r; last; }
-    # no busy sleep needed; poll_responses does select with a timeout
-}
+$udp_ns->test_send(
+    args   => { msg => msg( peer => '127.0.0.1', qid => 2, qname => 'a.example.', qtype => 'A', qr => 1 ) },
+    expect => {},
+);
 
-is( scalar( @first_res ), 2, 'exactly one response pair returned' );
-if ( @first_res == 2 ) {
-    my ( $qid, $packet ) = @first_res;
-    is( $qid, $qid1, 'response source IP matches server' );
-    ok( $packet->qr, 'response has QR=1' );
-    my ( $qrr ) = $packet->question();
-    ok( defined $qrr, 'response contains one question' );
-}
+test_advances_time 0 => sub {
+    test_consumes_tokens [] => sub {
+        $sut->test_step(
+            args   => {},
+            expect => {
+                events => [
+                    {
+                        token => 2,
+                        event => msg( peer => '127.0.1.53', qid => 2, qname => 'a.example.', qtype => 'A', qr => 1 )
+                    }
+                ]
+            },
+        );
+    };
+};
 
-# Wait past the exchange timeout so the other outstanding request expires
-sleep 0.40;
-my @after_timeout = $dispatcher->poll_responses();
-is( scalar( @after_timeout ), 2, 'no responses immediately after timeout window' );
-if ( @after_timeout == 2 ) {
-    my ( $qid, $packet ) = @after_timeout;
-    is( $qid,    $qid2,      'response source IP matches server' );
-    is( $packet, &ETIMEDOUT, 'response is ETIMEDOUT' );
-}
-
-# Allow the server to send the deliberately late response, then ensure it is discarded
-sleep 0.30;
-my @late = $dispatcher->poll_responses();
-is( scalar( @late ), 0, 'late response discarded (no matching active exchange)' );
-
-done_testing();
+done_testing;

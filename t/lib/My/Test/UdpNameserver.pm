@@ -71,9 +71,10 @@ sub test_recv {
         $self->{_peerport} = $port;
 
         $msg = Zonemaster::LDNS::Packet->new_from_wireformat2( $buffer );
+        $msg->answerfrom( $ip );
         $msg =
           ( defined $msg )
-          ? My::Test::Msg->try_from_packet( $msg, $ip )
+          ? My::Test::Msg->try_from_packet( $msg )
           : join( ' ', unpack( '(H2)*', $buffer ) );
     }
 

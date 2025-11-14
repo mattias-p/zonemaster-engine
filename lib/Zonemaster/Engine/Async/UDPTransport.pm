@@ -77,16 +77,16 @@ use constant DNS_HEADER_SIZE => 12;
 
 =head1 CONSTRUCTOR
 
-=head2 new( $socket, $peerport = 53 )
+=head2 new( %opts )
 
 Create a transport over an already created nonblocking datagram socket.
 
 =over 4
 
-=item * C<$socket> - An L<IO::Socket> object supporting C<send> and C<recv>.
+=item * C<socket> - An L<IO::Socket> object supporting C<send> and C<recv>.
 The caller is responsible to set the socket to nonblocking mode.
 
-=item * C<$peerport> - Destination port used for all sends. Default 53.
+=item * C<peerport> - Destination port used for all sends. Default 53.
 
 =back
 
@@ -114,10 +114,10 @@ sub new {
     $peerport //= 53;
 
     my $obj = {
-        _peerport    => $peerport,
-        _socket      => $socket,
-        _write_queue => [],          # an array of hashes with keys {qid, question, message}
-        _read_queue  => {},          # hash from QID to [sockaddr, qname, qtype, qclass] arrayref
+        _peerport => $peerport,
+        _socket   => $socket,
+        _pending  => [],          # an array of hashes with keys {qid, question, message}
+        _active   => {},          # hash from QID to [sockaddr, qname, qtype, qclass] arrayref
     };
 
     return bless $obj, $class;
@@ -163,7 +163,7 @@ sub enqueue {
     my ( $question_rr ) = $packet->question();
     my $question        = [ $dst_addr, $question_rr->name(), $question_rr->type(), $question_rr->class() ];
 
-    push $self->{_write_queue}->@*,
+    push $self->{_pending}->@*,
       {
         qid      => $qid,
         question => $question,
@@ -183,8 +183,8 @@ ID is unknown.
 sub cancel {
     my ( $self, $qid ) = @_;
 
-    $self->{_write_queue}->@* = grep { $_->{qid} != $qid } $self->{_write_queue}->@*;
-    delete $self->{_read_queue}{$qid};
+    $self->{_pending}->@* = grep { $_->{qid} != $qid } $self->{_pending}->@*;
+    delete $self->{_active}{$qid};
 
     return;
 }
@@ -199,7 +199,7 @@ C<handle_writable> may make progress.
 sub send_queue_len {
     my ( $self ) = @_;
 
-    return scalar( $self->{_write_queue}->@* );
+    return scalar( $self->{_pending}->@* );
 }
 
 =head2 inflight_count( )
@@ -212,7 +212,7 @@ responses.
 sub inflight_count {
     my ( $self ) = @_;
 
-    return scalar keys $self->{_read_queue}->%*;
+    return scalar keys $self->{_active}->%*;
 }
 
 =head2 handle_writable( )
@@ -232,9 +232,9 @@ sub handle_writable {
     my $i = 0;
 
   QUEUE:
-    while ( $i <= $self->{_write_queue}->$#* ) {
+    while ( $i <= $self->{_pending}->$#* ) {
         my ( $qid, $question, $message ) =
-          $self->{_write_queue}[$i]->@{qw( qid question message )};
+          $self->{_pending}[$i]->@{qw( qid question message )};
         my $dst_addr = $question->[0];
 
         local $ERRNO = 0;
@@ -242,7 +242,7 @@ sub handle_writable {
             my $sent = $self->{_socket}->send( $message, 0, $dst_addr );
 
             if ( defined $sent ) {
-                $self->{_read_queue}{$qid} = $question;
+                $self->{_active}{$qid} = $question;
 
                 $i += 1;
                 next QUEUE;
@@ -254,9 +254,9 @@ sub handle_writable {
             croak sprintf( "send to %s:%d failed: %s (%d)", $ip, $port, $ERRNO, $ERRNO );
         }
 
-    } ## end QUEUE: while ( $i <= $self->{_write_queue...})
+    } ## end QUEUE: while ( $i <= $self->{_pending...})
 
-    splice $self->{_write_queue}->@*, 0, $i;
+    splice $self->{_pending}->@*, 0, $i;
 
     return;
 } ## end sub handle_writable
@@ -313,7 +313,7 @@ sub handle_readable {
     my ( $self ) = @_;
 
     my @responses;
-    while ( $self->{_read_queue}->%* ) {
+    while ( $self->{_active}->%* ) {
         my $buffer   = '';
         my $src_addr = $self->{_socket}->recv( $buffer, MAX_RECV_HINT );
         if ( !$src_addr ) {
@@ -334,15 +334,15 @@ sub handle_readable {
         }
 
         my $qid      = unpack( 'n', $buffer );
-        my $question = $self->{_read_queue}{$qid};
+        my $question = $self->{_active}{$qid};
         if ( !$question ) {
             $log->trace( 'handle_readable: no matching QID; retry' );
             redo;
         }
 
-        my ( $dst_addr, $qname, $qtype, $qclass ) = $question->@*;
+        my ( $peer_addr, $qname, $qtype, $qclass ) = $question->@*;
 
-        if ( $dst_addr ne $src_addr ) {
+        if ( $peer_addr ne $src_addr ) {
             $log->trace( 'handle_readable: no matching QID/server; retry' );
             redo;
         }
@@ -355,6 +355,8 @@ sub handle_readable {
             }
             croak sprintf( "parse failed: %s (%d)", $ERRNO, $ERRNO );
         }
+        my ( undef, $peer_ip ) = unpack_sockaddr( $peer_addr );
+        $packet->answerfrom( $peer_ip );
 
         if ( !$packet->qr() ) {
             $log->trace( 'handle_readable: QR=0; retry' );
@@ -381,8 +383,8 @@ sub handle_readable {
 
         push @responses, $packet;
 
-        delete $self->{_read_queue}{$qid};
-    } ## end while ( $self->{_read_queue...})
+        delete $self->{_active}{$qid};
+    } ## end while ( $self->{_active}->...)
 
     return @responses;
 } ## end sub handle_readable
@@ -390,13 +392,13 @@ sub handle_readable {
 sub want_write {
     my ( $self ) = @_;
 
-    return $self->{_write_queue}->@* > 0;
+    return $self->{_pending}->@* > 0;
 }
 
 sub want_read {
     my ( $self ) = @_;
 
-    return $self->{_read_queue}->%* > 0;
+    return $self->{_active}->%* > 0;
 }
 
 =head1 LOGGING

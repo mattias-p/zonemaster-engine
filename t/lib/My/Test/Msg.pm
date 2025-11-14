@@ -2,6 +2,7 @@ package My::Test::Msg;
 use v5.26;
 use warnings;
 
+use Carp                       qw( croak );
 use Exporter                   qw( import );
 use My::Test::TokenAllocator   qw( $Uint16 );
 use Params::ValidationCompiler qw( validation_for );
@@ -21,8 +22,6 @@ sub msg {
     return My::Test::Msg->new( @_ );
 }
 
-use Data::Dumper;
-
 sub new {
     my ( $class, %args ) = @_;
 
@@ -31,25 +30,71 @@ sub new {
         params => {
             peer  => { type => NonEmptySimpleStr },
             qname => { type => NonEmptySimpleStr },
-            qtype => { type => Enum [qw( SOA )] },
+            qtype => { type => Enum [qw( SOA A )] },
             qid   => { type => $Uint16, default => 0 },
             qr    => { type => Bool,    default => 0 },
             tc    => { type => Bool,    default => 0 },
         },
     );
 
-    %args = $check->( %args );
+    my (    #
+        $peer,
+        $qname,
+        $qtype,
+        $qid,
+        $qr,
+        $tc,
+      )
+      = delete @args{
+        qw(
+          peer
+          qname
+          qtype
+          qid
+          qr
+          tc
+        )
+      };
+    if ( %args ) {
+        croak 'unrecognized args: ', join( ', ', sort keys %args );
+    }
+    if ( !defined $peer || ref $peer ne '' || $peer !~ qr{^[0-9.:]+$} ) {
+        croak 'invalid argument: peer';
+    }
+    if ( !defined $qname || ref $qname ne '' || $qname !~ qr{^[A-Za-z1-9.]+$} ) {
+        croak 'invalid argument: qname';
+    }
+    if ( !defined $qtype || ref $qtype ne '' || $qtype !~ qr{^(SOA|A)$} ) {
+        croak 'invalid argument: qtype';
+    }
+    if ( defined $qid && ( ref $qid ne '' || $qid !~ qr{^[0-9]{1,5}$} ) ) {
+        croak 'invalid argument: qid';
+    }
+    if ( defined $qr && ( ref $qr ne '' || $qr !~ qr{^(1|0|)$} ) ) {
+        croak 'invalid argument: qr';
+    }
+    if ( defined $tc && ( ref $tc ne '' || $tc !~ qr{^(1|0|)$} ) ) {
+        croak 'invalid argument: tc';
+    }
 
-    $args{qr} = $args{qr} ? 1 : 0;
-    $args{tc} = $args{tc} ? 1 : 0;
+    $qid //= 0;
+    $qr = $qr ? 1 : 0;
+    $tc = $tc ? 1 : 0;
 
-    my $obj = \%args;
+    my $obj = {
+        peer  => $peer,
+        qname => $qname,
+        qtype => $qtype,
+        qid   => $qid,
+        qr    => $qr,
+        tc    => $tc,
+    };
 
     return bless $obj, $class;
 } ## end sub new
 
 sub try_from_packet {
-    my ( $class, $packet, $peer ) = @_;
+    my ( $class, $packet ) = @_;
 
     if (   !blessed $packet
         || !$packet->isa( 'Zonemaster::LDNS::Packet' )
@@ -64,7 +109,7 @@ sub try_from_packet {
     my ( $question ) = $packet->question;
 
     return $class->new(
-        peer  => $peer,
+        peer  => $packet->answerfrom,
         qname => $question->name,
         qtype => $question->type,
         qid   => $packet->id,

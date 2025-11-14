@@ -7,7 +7,7 @@ use Role::Tiny qw( requires );
 requires qw(
   add_request
   add_timeout
-  tick
+  step
 );
 
 1;
