@@ -14,7 +14,7 @@ use Time::HiRes qw( clock_gettime CLOCK_MONOTONIC );
 
 use Zonemaster::Engine::Async qw( errno_names );
 use Zonemaster::Engine::Async::UDPTransport;
-use Zonemaster::Engine::Async::TimeoutError;
+use Zonemaster::Engine::Async::Error qw( $TRANSIENT_KIND );
 
 with 'Zonemaster::Engine::Async::SessionRole';
 
@@ -94,6 +94,18 @@ sub add_request {
     return $qid;
 }
 
+=head2 step()
+
+Send pending requests, return received responses, and/or transpired timeouts.
+
+Blocks until any progress can be made, or returns immediately if there is nothing to be done.
+
+Returns a flattened list of (query id, response/timeout)-pairs.
+A response is represented as a Zonemaster::Engine::Packet, and a timeout as a
+Zonemaster::Engine::Async::Error.
+
+=cut
+
 sub step {
     my ( $self ) = @_;
 
@@ -156,7 +168,7 @@ sub step {
     for my $qid ( @expired ) {
         delete $self->{_deadlines}{$qid};
         $self->{_udp}->cancel( $qid );
-        push @results, ( $qid, Zonemaster::Engine::Async::TimeoutError->new() );
+        push @results, ( $qid, Zonemaster::Engine::Async::Error->from_timeout( $TRANSIENT_KIND, 'request' ) );
     }
 
     return @results;

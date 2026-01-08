@@ -225,6 +225,8 @@ sub _check_ds_expressions {
     }
 }
 
+sub ok { Test::More::ok( @_ ) }
+
 sub perform_methodsv2_testing {
     my ( $href_subtests, $selected_scenarios, $disabled_scenarios ) = @_;
     my %subtests = %$href_subtests;
