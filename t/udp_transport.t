@@ -7,10 +7,8 @@ use File::Basename;
 use File::Spec::Functions qw( rel2abs );
 use lib dirname( rel2abs( $0 ) );
 
-use Carp qw( confess croak );
 use English;
 use Errno          qw( EINTR EAGAIN EWOULDBLOCK ENOBUFS EMSGSIZE ENETUNREACH EINVAL ENETDOWN );
-use List::Util     qw( pairmap );
 use Mock::Scripted qw( new_scripted_mock );
 use Test::Deep     qw( ignore );
 use Test::Exception;
@@ -34,6 +32,13 @@ sub mk_recv_err {
     };
 }
 
+=head2 mk_recv_data
+
+Create an L<Mock::Scripted/"EXPECTATION HASH"> representing a call to L<IO::Socket/"recv">
+that returns a certain message from a certain server.
+
+=cut
+
 sub mk_recv_data {
     my ( $server, $message, $name ) = @_;
 
@@ -44,7 +49,10 @@ sub mk_recv_data {
         method => 'recv',
         args   => [ ignore(), MAX_RECV_BUFSIZE ],
         do     => sub {
+            # Write $message to the buffer argument of IO::Socket::recv.
             $_[0] = $message;
+
+            # Return the
             $sockaddr;
         },
     };
@@ -86,6 +94,15 @@ sub mk_send_ok {
         returns => length( $message ),
     };
 }
+
+=head2 prep_send
+
+  prep_send( $sut, $ctl, %query );
+
+Test helper that performs the "send" part of an exchange.
+The query is sent from the SUT and handled in the mock server.
+
+=cut
 
 sub prep_send {
     my ( $sut, $ctl, %query ) = @_;
@@ -147,6 +164,20 @@ sub get_errno {
     my $errno = $cv->();
     return ( $errno, 0+ $errno );
 }
+
+=head2 setup
+
+    my ( $sut, $ctl ) = setup();
+    my ( $sut, $ctl ) = setup( \%QUERY_1, \%QUERY_2, ... );
+
+Construct a C<Zonemaster::Engine::Async::UDPTransport> wired to a scripted mock
+socket, and optionally pre-load it with one or more queries that are sent
+immediately (leaving the transport waiting for responses).
+
+Returns a C<Zonemaster::Engine::Async::UDPTransport> and a
+C<Mock::Scripted::Ctl>;
+
+=cut
 
 sub setup {
     my ( @queries ) = @_;
@@ -254,7 +285,7 @@ subtest 'errnos causing handle_writable to return' => sub {
 
             my ( $sut, $ctl ) = setup();
 
-            $ctl->expect( mk_send_err( {%QUERY_1}, $errno, "senf(query 1)->$mnemonic" ), );
+            $ctl->expect( mk_send_err( {%QUERY_1}, $errno, "send(query 1)->$mnemonic" ), );
 
             $sut->enqueue( to_query( %QUERY_1 ) );
             $sut->handle_writable();
@@ -281,7 +312,7 @@ subtest 'errnos causing handle_readable to return' => sub {
             my ( $sut, $ctl ) = setup( \%QUERY_1 );
 
             $ctl->expect( mk_recv_err( $errno, "recv()->$mnemonic" ) );
-            my @responses = pairmap { $a => $b->data } $sut->handle_readable();
+            my @responses = map { $_->data } $sut->handle_readable();
 
             $ctl->done_ok( "no more attempts to recv after $mnemonic" );
             test_wants( $sut, { read => 1 }, 'still awaiting responses' );
@@ -447,6 +478,7 @@ subtest 'handle_readable accepts case-variant QNAME' => sub {
     $ctl->expect( mk_recv_ok( { %RESPONSE_1, qname => '1.TEST' }, 'case variant' ) );
     my @responses = map { $_->data } $sut->handle_readable();
 
+    $ctl->done_ok();
     cmp_ok scalar( @responses ), '==', 1, 'accepted';
     is_with_context \@responses, [ dns_msg( %RESPONSE_1, qname => '1.TEST' ) ], 'response 1 was returned';
 };
@@ -457,6 +489,7 @@ subtest 'handle_readable accepts TC=1' => sub {
     $ctl->expect( mk_recv_ok( { %RESPONSE_1, tc => 1 }, 'truncation' ) );
     my @responses = map { $_->data } $sut->handle_readable();
 
+    $ctl->done_ok();
     is_with_context \@responses, [ dns_msg( %RESPONSE_1, tc => 1 ) ], 'response 1 was returned';
 };
 
@@ -467,7 +500,7 @@ subtest 'cancel ignores unrecognized exhanges' => sub {
     test_wants( $sut, {} );
 };
 
-subtest 'cancel removes pending exhanges' => sub {
+subtest 'cancel removes pending write' => sub {
     my ( $sut, $ctl ) = setup();
 
     $sut->enqueue( to_query( %QUERY_1 ) );
@@ -476,17 +509,23 @@ subtest 'cancel removes pending exhanges' => sub {
     test_wants( $sut, { write => 1 } );
 };
 
-subtest 'cancel removes pending exhanges' => sub {
+subtest 'cancel removes pending read' => sub {
     my ( $sut, $ctl ) = setup();
 
-    $ctl->expect( mk_send_ok( \%QUERY_1 ) );
-    $ctl->expect( mk_send_ok( \%QUERY_2 ) );
+    # Enqueue writes
     $sut->enqueue( to_query( %QUERY_1 ) );
     $sut->enqueue( to_query( %QUERY_2 ) );
+
+    # Handle writes
+    $ctl->expect( mk_send_ok( \%QUERY_1 ) );
+    $ctl->expect( mk_send_ok( \%QUERY_2 ) );
     $sut->handle_writable();
     $ctl->done_ok;
 
+    # Cancel one read
     $sut->cancel( $QUERY_1{qid} );
+
+    # Verify one remaining read
     test_wants( $sut, { read => 1 } );
 };
 

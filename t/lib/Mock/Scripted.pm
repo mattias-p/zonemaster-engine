@@ -27,9 +27,9 @@ return values are produced.
 As soon as the system under test goes off script, this is reported as a failure and
 execution aborts with an exception.
 
-Mock::Scripted is intended for testing sharp edge cases on a single collaborator. The
-tradeoffs are brittleness when call order is non-deterministic and extra maintenance when
-refactors change sequencing.
+Mock::Scripted is intended for testing nuanced behaviors. The tradeoffs are brittleness
+when call order is non-deterministic and extra maintenance on changes in behavior of the
+system under test.
 
 =cut
 
@@ -134,6 +134,8 @@ Arrayref. The exact argument list. You may include L<Test::Deep> matchers
   do      => sub { ... }  # coderef implementing behavior
 
 =back
+
+N.b., C<do> is called WITHOUT a receiver object.
 
 N.b., C<do> may modify C<$!> to simulate syscalls.
 

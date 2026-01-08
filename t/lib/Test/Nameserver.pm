@@ -35,17 +35,14 @@ sub start {
             my $count = $shm->fetch;
             $count++;
             $shm->store( $count );
-            warn "got request $count";
 
             return if $mode eq 'drop_all';
             return if $mode eq 'drop_once' && $count == 1;
 
             if ( $mode eq 'delay_second' && $count == 2 ) {
-                warn "SLEEPING for $delay_ms ms\n";
                 usleep( 1000 * $delay_ms );    # blocks server subprocess only
             }
 
-            warn "sending response $count";
             $shm->unlock;
 
             # Respond NOERROR with matching ID and question, zero answers.
