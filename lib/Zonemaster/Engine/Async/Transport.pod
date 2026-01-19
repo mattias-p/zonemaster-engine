@@ -1,0 +1,63 @@
+#!/usr/bin/env perl
+
+=head1 NAME
+
+Zonemaster::Engine::Async::Transport - A DNS transport interface.
+
+=head1 DESCRIPTION
+
+This interface abstracts the handling of individual DNS exchanges, and encapsulates the
+details of how the messages are being sent and received over the network.
+
+=head1 METHODS
+
+=head2 enqueue
+
+Add an exchange to the send queue.
+
+=head2 cancel
+
+Drop an exchange from the send queue or the set of in-flight exchanges.
+
+=head2 want_read
+
+Query for the transport's desire to read from the client socket.
+
+=head2 want_write
+
+Query for the transport's desire to send requests through the client socket.
+
+=head2 handle_readable
+
+Receive one or more packets over the client socket.
+
+This method is blocks unless the client socket is ready to be read from.
+
+=head2 handle_writable
+
+Send one or more requests over the client socket.
+
+This method is blocks unless the client socket is ready to be written to.
+
+=head2 inflight_count
+
+Get the number of in-flight exchanges.
+
+=head2 io_handle
+
+Get the wrapped IO::Handle.
+
+This method allows the caller to use L<IO::Select> (et.c.) to determine whether the client
+socket is ready to be read and/or written.
+
+=head2 send_queue_len
+
+Get the number of exchanges in the send queue.
+
+=head1 EXCEPTIONS
+
+If an exception is thrown from a method of this interface, treat it as a fatal transport
+malfunction: catch it, fail outstanding exchanges, and recreate the socket/transport
+rather than continuing with the same instance.
+
+=cut

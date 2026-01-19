@@ -1,0 +1,9 @@
+#!/usr/bin/env perl
+
+=head1 NAME
+
+Zonemaster::Engine::Async::Dispatcher - Dispatcher interface
+
+=head2 EXCEPTIONS
+
+=cut
