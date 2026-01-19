@@ -250,6 +250,7 @@ sub handle_writable {
 
             next       if $!{EINTR};
             last QUEUE if $!{EAGAIN} || $!{EWOULDBLOCK} || $!{ENOBUFS};
+
             my ( $port, $ip ) = unpack_sockaddr( $dst_addr );
             croak sprintf( "send to %s:%d failed: %s (%d)", $ip, $port, $ERRNO, $ERRNO );
         }
@@ -264,8 +265,9 @@ sub handle_writable {
 =head2 handle_readable( ) -> @packets
 
 Read and validate as many UDP datagrams as are immediately available and match
-active exchanges. Returns a list of L<Zonemaster::LDNS::Packet> objects. Order
-follows arrival.
+active exchanges. Returns an ERRNO value and a list of L<Zonemaster::LDNS::Packet>
+objects. The ERRNO represents a socket-level error, with C<0> meaning no error. Packet
+order follows arrival.
 
 Behavior:
 

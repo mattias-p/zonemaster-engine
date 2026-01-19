@@ -2,6 +2,8 @@
 use v5.26;
 use warnings;
 use Test::More;
+use lib 't';
+use lib 't/lib';
 
 use Log::Any::Adapter ( 'Stderr' );
 use IO::Socket::INET;

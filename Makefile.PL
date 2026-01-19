@@ -8,7 +8,6 @@ name 'Zonemaster-Engine';
 # lib/Zonemaster/Engine/Translator.pm
 # share/Makefile
 
-
 repository 'https://github.com/zonemaster/zonemaster-engine';
 bugtracker 'https://github.com/zonemaster/zonemaster-engine/issues';
 
@@ -34,7 +33,7 @@ requires 'Net::IP::XS'        => 0.21;
 requires 'Readonly'           => 0;
 requires 'Text::CSV'          => 0;
 requires 'YAML::XS'           => 0;
-requires 'Zonemaster::LDNS'   => 5.000002; # For v5.0.2
+requires 'Zonemaster::LDNS'   => 5.000002;    # For v5.0.2
 
 test_requires 'Locale::PO'        => 0;
 test_requires 'Pod::Coverage'     => 0;
@@ -47,20 +46,19 @@ test_requires 'Test::Pod'         => 1.22;
 
 # Make all platforms include inc/Module/Install/External.pm
 requires_external_bin 'find';
-if ($^O eq "freebsd") {
+if ( $^O eq "freebsd" ) {
     requires_external_bin 'gmake';
-};
+}
 
 sub MY::postamble {
     my $pure_all;
-    if ($^O eq "freebsd") {
+    if ( $^O eq "freebsd" ) {
         # Make FreeBSD use gmake for share/Makefile
-        $pure_all = 'GMAKE ?= "gmake"' . "\n"
-            . 'pure_all :: share/Makefile' . "\n"
-            . "\t" . 'cd share && $(GMAKE) all' . "\n";
-    } else {
-        $pure_all = 'pure_all :: share/Makefile' . "\n"
-            . "\t" . 'cd share && $(MAKE) all' . "\n";
+        $pure_all =
+          'GMAKE ?= "gmake"' . "\n" . 'pure_all :: share/Makefile' . "\n" . "\t" . 'cd share && $(GMAKE) all' . "\n";
+    }
+    else {
+        $pure_all = 'pure_all :: share/Makefile' . "\n" . "\t" . 'cd share && $(MAKE) all' . "\n";
     }
 
     my $docker = <<'END_DOCKER';
@@ -77,7 +75,7 @@ docker-tag-latest:
 END_DOCKER
 
     return $pure_all . $docker;
-};
+} ## end sub MY::postamble
 
 install_share;
 

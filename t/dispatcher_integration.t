@@ -2,6 +2,8 @@
 use v5.26;
 use warnings;
 use Test::More;
+use lib 't';
+use lib 't/lib';
 
 use My::Test::Clock  qw( test_advances_time );
 use My::Test::Msg    qw( msg );
