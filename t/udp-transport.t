@@ -4,12 +4,13 @@ use warnings;
 use lib 't';
 use lib 't/lib';
 use Test2::V0;
-#use Test::NoWarnings 'had_no_warnings';
+use Test::NoWarnings 'had_no_warnings';
 
 use English;
-use Errno          qw( EINTR EAGAIN EWOULDBLOCK ENOBUFS EMSGSIZE ENETUNREACH EINVAL ENETDOWN );
-use Mock::Scripted qw( new_scripted_mock );
-use Test::Deep     qw( ignore );
+use Errno             qw( EINTR EAGAIN EWOULDBLOCK ENOBUFS EMSGSIZE ENETUNREACH EINVAL ENETDOWN );
+use Mock::Scripted    qw( new_scripted_mock );
+use Test::Deep        qw( ignore );
+use Test::Differences qw( eq_or_diff );
 use Test::Exception;
 use TestUtil qw( is_with_context );
 
@@ -273,6 +274,7 @@ subtest 'errnos causing handle_writable to return' => sub {
     my @retry_send_errnos = qw(
       EAGAIN
       ENOBUFS
+      ENOMEM
       EWOULDBLOCK
     );
 
@@ -321,19 +323,35 @@ subtest 'errnos causing handle_readable to return' => sub {
     }
 };
 
-subtest 'handle_writable should retry on EINTR' => sub {
+subtest 'handle_writable should retry once on EINTR' => sub {
     my ( $ctl, $socket ) = new_scripted_mock( qw( send recv ) );
     my $sut = Zonemaster::Engine::Async::UDPTransport->new( socket => $socket );
     $sut->enqueue( to_query( %QUERY_1 ) );
 
     $ctl->expect( mk_send_err( {%QUERY_1}, &EINTR,       'send(query 1)->EINTR' ) );
-    $ctl->expect( mk_send_err( {%QUERY_1}, &EINTR,       'send(query 1)->EINTR' ) );
-    $ctl->expect( mk_send_err( {%QUERY_1}, &EINTR,       'send(query 1)->EINTR' ) );
     $ctl->expect( mk_send_err( {%QUERY_1}, &EWOULDBLOCK, 'send(query 1)->EWOULDBLOCK' ), );
-    $sut->handle_writable();
+    my ( $errno, @results ) = $sut->handle_writable();
 
     $ctl->done_ok( 'no more attempts to send after EWOULDBLOCK' );
     test_wants( $sut, { write => 1 }, 'should still want write' );
+    eq_or_diff { errno => 0+ $errno, results => \@results }, { errno => EWOULDBLOCK, results => [] },
+      'socket-level EWOULDBLOCK and no terminated tasks';
+};
+
+subtest 'handle_writable should not retry once on EINTR' => sub {
+    my ( $ctl, $socket ) = new_scripted_mock( qw( send recv ) );
+    my $sut = Zonemaster::Engine::Async::UDPTransport->new( socket => $socket );
+    $sut->enqueue( to_query( %QUERY_1 ) );
+
+    $ctl->expect( mk_send_err( {%QUERY_1}, &EINTR, 'send(query 1)->EINTR' ) );
+    $ctl->expect( mk_send_err( {%QUERY_1}, &EINTR, 'send(query 1)->EINTR' ) );
+
+    my ( $errno, @results ) = $sut->handle_writable();
+
+    $ctl->done_ok( 'no more attempts to send after second EINTR' );
+    test_wants( $sut, { write => 1 }, 'should still want write' );
+    eq_or_diff { errno => 0+ $errno, results => \@results }, { errno => EINTR, results => [] },
+      'socket-level EINTR and no terminated tasks';
 };
 
 subtest 'handle_readable should retry on EINTR' => sub {
@@ -377,10 +395,6 @@ subtest 'handle_readable rejects unparsable response' => sub {
     test_wants( $sut, { read => 1 }, 'still awaiting responses' );
     is_with_context \@responses, [], 'no responses were returned';
 };
-
-#had_no_warnings;
-done_testing;
-exit 0;
 
 subtest 'handle_readable rejects questionless response' => sub {
     my ( $sut, $ctl ) = setup( \%QUERY_1 );
@@ -598,5 +612,5 @@ subtest 'a sequence' => sub {
     test_wants( $sut, {}, 'should not want read after receiving all responses' );
 };
 
-#had_no_warnings;
+had_no_warnings;
 done_testing;

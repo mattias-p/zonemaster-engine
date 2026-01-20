@@ -138,7 +138,15 @@ sub step {
         local $ERRNO = 0;
         if ( my ( $readable, $writable, undef ) = $self->{_select_fn}( $want_read, $want_write, $timeout ) ) {
             if ( $writable->@* ) {
-                $self->{_udp}->handle_writable;
+                my ( $socket_errno, @new_results ) = $self->{_udp}->handle_writable;
+                push @results, @new_results;
+                if ( $socket_errno == ENOBUFS || $socket_errno == ENOMEM ) {
+                    # TODO enable backpressure:
+                    #  * set a deadline before which no file handles are to be
+                    #    included in the call to select().
+                    #  * immediately time out tasks that time out before the deadline.
+                    #  * handle readable also, but then break out of the loop.
+                }
             }
             if ( $readable->@* ) {
                 my @new_results = $self->{_udp}->handle_readable;
@@ -148,7 +156,7 @@ sub step {
                     push @results, $qid, $packet;
                 }
             }
-        }
+        } ## end if ( my ( $readable, $writable...))
         elsif ( $!{EINTR} ) {
             $log->trace( 'step: EINTR' );
             redo;

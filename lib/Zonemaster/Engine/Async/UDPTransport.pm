@@ -217,19 +217,28 @@ sub inflight_count {
 
 =head2 handle_writable( )
 
-Attempt to send all pending datagrams until the socket would block or the queue
-is empty. Internally retries C<EINTR>. On C<EAGAIN>, C<EWOULDBLOCK>, or
-C<ENOBUFS> it stops and leaves the remaining items queued. On other send
-failures it C<croak>s.
+Attempt to send all pending datagrams until the socket would block or the queue is empty.
 
-Returns nothing.
+Croaks on C<EBADF>, C<ENOTSOCK>, C<EFAULT>, and C<EDESTADDRREQ>, indicating a bug, e.g., a
+violated pre-condition or a bug inside C<handle_writable>.
+
+Returns a socket-level ERRNO and a list of failed tasks.
+
+The socket-level ERRNO is either zero, indicating that all tasks were processed, or
+C<EAGAIN>, C<EWOULDBLOCK>, C<ENOBUFS>, C<ENOMEM>, or C<EINTR>, indicating that one of
+these errors occurred; C<EINTR> is only returned if persistent.
+
+The list of failed tasks is a flattened list of (QID, ERRNO)-pairs. It contains all the
+failed send operations that were neither recognized as socket-level or bug indications.
 
 =cut
 
 sub handle_writable {
     my ( $self ) = @_;
 
-    my $i = 0;
+    my $i            = 0;
+    my $socket_errno = 0;
+    my @results;
 
   QUEUE:
     while ( $i <= $self->{_pending}->$#* ) {
@@ -237,9 +246,13 @@ sub handle_writable {
           $self->{_pending}[$i]->@{qw( qid question message )};
         my $dst_addr = $question->[0];
 
-        local $ERRNO = 0;
+        local $ERRNO;
         for ( ; ; ) {
+            $ERRNO = 0;
             my $sent = $self->{_socket}->send( $message, 0, $dst_addr );
+            if ( $!{EINTR} ) {
+                $sent = $self->{_socket}->send( $message, 0, $dst_addr );
+            }
 
             if ( defined $sent ) {
                 $self->{_active}{$qid} = $question;
@@ -247,19 +260,24 @@ sub handle_writable {
                 $i += 1;
                 next QUEUE;
             }
-
-            next       if $!{EINTR};
-            last QUEUE if $!{EAGAIN} || $!{EWOULDBLOCK} || $!{ENOBUFS};
-
-            my ( $port, $ip ) = unpack_sockaddr( $dst_addr );
-            croak sprintf( "send to %s:%d failed: %s (%d)", $ip, $port, $ERRNO, $ERRNO );
-        }
+            elsif ( $!{EINTR} || $!{EAGAIN} || $!{EWOULDBLOCK} || $!{ENOBUFS} || $!{ENOMEM} ) {
+                $socket_errno = $ERRNO;
+                last QUEUE;
+            }
+            elsif ( $!{EBADF} || $!{ENOTSOCK} || $!{EFAULT} || $!{EDESTADDRREQ} || $!{EISCONN} ) {
+                my ( $port, $ip ) = unpack_sockaddr( $dst_addr );
+                croak sprintf( "send to %s:%d failed: %s (%d)", $ip, $port, $ERRNO, $ERRNO );
+            }
+            else {
+                push @results, $qid, $ERRNO;
+            }
+        } ## end for ( ; ; )
 
     } ## end QUEUE: while ( $i <= $self->{_pending...})
 
     splice $self->{_pending}->@*, 0, $i;
 
-    return;
+    return $socket_errno, @results;
 } ## end sub handle_writable
 
 =head2 handle_readable( ) -> @packets
