@@ -132,8 +132,9 @@ sub step {
 
     my @results;
     do {
-        my $now_mono = $self->_now_mono;
-        my $timeout  = max 0, $earliest_deadline - $now_mono;
+        my $now_mono     = $self->_now_mono;
+        my $timeout      = max 0, $earliest_deadline - $now_mono;
+        my $is_exhausted = 0;
         $log->tracef( 'step: select %d %d 0 %fs', scalar $want_read->handles, scalar $want_write->handles, $timeout );
         local $ERRNO = 0;
         if ( my ( $readable, $writable, undef ) = $self->{_select_fn}( $want_read, $want_write, $timeout ) ) {
@@ -141,20 +142,31 @@ sub step {
                 my ( $socket_errno, @new_results ) = $self->{_udp}->handle_writable;
                 push @results, @new_results;
                 if ( $socket_errno == ENOBUFS || $socket_errno == ENOMEM ) {
-                    # TODO enable backpressure:
-                    #  * set a deadline before which no file handles are to be
-                    #    included in the call to select().
-                    #  * immediately time out tasks that time out before the deadline.
-                    #  * handle readable also, but then break out of the loop.
+                    $is_exhausted = 1;
                 }
             }
             if ( $readable->@* ) {
-                my @new_results = $self->{_udp}->handle_readable;
+                my ( $socket_errno, @new_results ) = $self->{_udp}->handle_readable;
+
                 for my $packet ( @new_results ) {
                     my $qid = $packet->id();
                     delete $self->{_deadlines}{$qid};
                     push @results, $qid, $packet;
                 }
+
+                if ( $socket_errno == ENOBUFS || $socket_errno == ENOMEM ) {
+                    $is_exhausted = 1;
+                }
+                elsif ( $socket_errno != 0 ) {
+                    $log->trace( 'handle_readable: recv->%s', $socket_errno );
+                }
+            }
+            if ( $is_exhausted ) {
+                # TODO apply backpressure:
+                #  * set a deadline before which no file handles are to be
+                #    included in the call to select().
+                #  * immediately time out tasks that time out before the deadline.
+                last;
             }
         } ## end if ( my ( $readable, $writable...))
         elsif ( $!{EINTR} ) {

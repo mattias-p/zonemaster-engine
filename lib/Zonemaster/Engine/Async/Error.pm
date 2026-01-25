@@ -6,58 +6,25 @@ use Carp qw( croak );
 use English;
 use Exporter qw( import );
 use Readonly;
+use Zonemaster::Engine::Async::LdnsError;
+use Zonemaster::Engine::Async::OsError;
 
 Readonly our @EXPORT_OK => qw(
-  $DESTINATION_KIND
-  $FATAL_KIND
-  $MESSAGE_KIND
-  $SOCKET_KIND
-  $TRANSIENT_KIND
-  $EOF_CODE
-  $TIMEOUT_CODE
+  new_os_error_from_errno
+  new_ldns_error
 );
 
-=head2 CONSTANTS
+sub new_os_error_from_errno {
+    return Zonemaster::Engine::Async::OsError->from_errno;
+}
 
-=over 4
-
-=item $DESTINATION_KIND
-
-Requests to the same destination are expected to fail.
-
-=item $FATAL_KIND
-
-Requests from the same process are expected to fail.
-
-=item $MESSAGE_KIND
-
-Requests using the same message are expected to fail.
-
-=item $SOCKET_KIND
-
-Requests using the same local socket are expected to fail.
-
-=item $TRANSIENT_KIND
-
-A repeated request has a reasonable chance of succeeding.
-
-=cut
-
-Readonly our $EOF_CODE     => 'EOF';
-Readonly our $TIMEOUT_CODE => 'TIMEOUT';
-
-Readonly our $DESTINATION_KIND => 'destination';    # requests to the same destination are expected to fail
-Readonly our $FATAL_KIND       => 'fatal';          # requests from the same process are expected to fail
-Readonly our $MESSAGE_KIND     => 'message';        # requests using the same message are expected to fail
-Readonly our $SOCKET_KIND      => 'socket';         # requests using the same local socket are expected to fail
-Readonly our $TRANSIENT_KIND   => 'transient';      # a repeated request has a good chance of succeeding
-
-Readonly our $KIND_RE => qr{^(?:$DESTINATION_KIND|$FATAL_KIND|$MESSAGE_KIND|$SOCKET_KIND|$TRANSIENT_KIND)$};
-Readonly our $CODE_RE => qr{^(?:[1-9][0-9]+|$EOF_CODE|$TIMEOUT_CODE)$};
+sub new_ldns_error {
+    return Zonemaster::Engine::Async::LdnsError->new;
+}
 
 use overload
   '""'   => 'message',
-  'bool' => sub { 0 };                              # errors are false in boolean context
+  'bool' => sub { 0 };    # errors are false in boolean context
 
 sub new {
     my ( $class, %args ) = @_;

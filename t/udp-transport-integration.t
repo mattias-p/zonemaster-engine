@@ -1,12 +1,22 @@
 #!perl
+
+=head1 NAME
+
+udp-transport-integration.t - Verify UDPTransport integration with a real UDP socket
+
+=cut
+
 use v5.26;
 use warnings;
+use lib 't';
+use lib 't/lib';
 use Test::More;
 use lib 't';
 use lib 't/lib';
 
 use Log::Any::Adapter ( 'Stderr' );
 use IO::Socket::INET;
+use Test::Differences;
 use Test::Exception;
 use Test::Nameserver;
 use Time::HiRes qw(usleep time);
@@ -52,15 +62,24 @@ for my $c ( @cases ) {
 is( $sut->send_queue_len, 2, 'send_queue_len reflects pending=2' );
 
 # Send
-$sut->handle_writable;
+my ( $err1, @responses1 ) = $sut->handle_writable;
+eq_or_diff {
+    err       => $err1,
+    responses => \@responses1,
+  },
+  {
+    err       => undef,
+    responses => [],
+  },
+  'no socket-level error and no terminated tasks';
 is( $sut->send_queue_len, 0, 'pending drained after handle_writable' );
 
 # Poll for responses
 my @got;
 my $deadline = time() + 3;    # 3s safety
 while ( time() < $deadline ) {
-    my @responses = $sut->handle_readable;
-    push @got, @responses if @responses;
+    my ( undef, @responses2 ) = $sut->handle_readable;
+    push @got, @responses2;
     last if @got == 2;
     usleep 50_000;
 }

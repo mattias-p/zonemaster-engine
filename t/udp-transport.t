@@ -1,14 +1,24 @@
 #!perl
+
+=head1 NAME
+
+udp-transport.t - Exercise nuanced behaivior of UDPTransport using mocked sockets.
+
+=cut
+
 use v5.26;
 use warnings;
 use lib 't';
 use lib 't/lib';
+use Log::Any::Test;
 use Test2::V0;
 use Test::NoWarnings 'had_no_warnings';
 
 use English;
 use Errno             qw( EINTR EAGAIN EWOULDBLOCK ENOBUFS EMSGSIZE ENETUNREACH EINVAL ENETDOWN );
+use Log::Any          qw($log);
 use Mock::Scripted    qw( new_scripted_mock );
+use Scalar::Util      qw( blessed );
 use Test::Deep        qw( ignore );
 use Test::Differences qw( eq_or_diff );
 use Test::Exception;
@@ -244,9 +254,10 @@ subtest 'errnos causing handle_writable to throw' => sub {
 
 subtest 'errnos causing handle_readable to throw' => sub {
     my @recv_fatal_errnos = qw(
+      EBADF
+      ENOTSOCK
       EINVAL
-      ENETDOWN
-      ENETUNREACH
+      EFAULT
     );
 
     for my $mnemonic ( @recv_fatal_errnos ) {
@@ -265,7 +276,7 @@ subtest 'errnos causing handle_readable to throw' => sub {
             qr/\Q($numeric)\E/, "$mnemonic is fatal";
 
             $ctl->done_ok( "$mnemonic consumed its scripted call" );
-            #test_wants( $sut, { read => 1, write => 1 }, 'failed recv should keep exchange in queue' );
+            test_wants( $sut, { read => 1 }, 'failed recv should keep exchange in queue' );
         };
     }
 };
@@ -311,16 +322,22 @@ subtest 'errnos causing handle_readable to return' => sub {
             plan skip_all => "$mnemonic not defined on this OS"
               if !defined $errno;
 
+            my $expect_err = Zonemaster::Engine::Async::OsError->from_mnemonic( $mnemonic );
+
             my ( $sut, $ctl ) = setup( \%QUERY_1 );
 
             $ctl->expect( mk_recv_err( $errno, "recv()->$mnemonic" ) );
-            my @responses = map { $_->data } $sut->handle_readable();
+            my ( $err, @responses ) = $sut->handle_readable();
+
+            @responses = map { $_ => $_->data } @responses;
 
             $ctl->done_ok( "no more attempts to recv after $mnemonic" );
             test_wants( $sut, { read => 1 }, 'still awaiting responses' );
-            is_with_context \@responses, [], 'no responses were returned';
+            is_with_context $err,        $expect_err, 'socket-level error should be returned';
+            is_with_context \@responses, [],          'no responses were returned';
+
         };
-    }
+    } ## end for my $mnemonic ( @retry_recv_errnos)
 };
 
 subtest 'handle_writable should retry once on EINTR' => sub {
@@ -346,11 +363,18 @@ subtest 'handle_writable should not retry once on EINTR' => sub {
     $ctl->expect( mk_send_err( {%QUERY_1}, &EINTR, 'send(query 1)->EINTR' ) );
     $ctl->expect( mk_send_err( {%QUERY_1}, &EINTR, 'send(query 1)->EINTR' ) );
 
-    my ( $errno, @results ) = $sut->handle_writable();
+    my ( $err, @responses ) = $sut->handle_writable();
 
     $ctl->done_ok( 'no more attempts to send after second EINTR' );
     test_wants( $sut, { write => 1 }, 'should still want write' );
-    eq_or_diff { errno => 0+ $errno, results => \@results }, { errno => EINTR, results => [] },
+    eq_or_diff {
+        err       => $err,
+        responses => \@responses
+      },
+      {
+        err       => Zonemaster::Engine::Async::OsError->from_mnemonic( 'EINTR' ),
+        responses => [],
+      },
       'socket-level EINTR and no terminated tasks';
 };
 
@@ -358,14 +382,21 @@ subtest 'handle_readable should retry on EINTR' => sub {
     my ( $sut, $ctl ) = setup( \%QUERY_1 );
 
     $ctl->expect( mk_recv_err( &EINTR,       'recv()->EINTR' ) );
-    $ctl->expect( mk_recv_err( &EINTR,       'recv()->EINTR' ) );
-    $ctl->expect( mk_recv_err( &EINTR,       'recv()->EINTR' ) );
     $ctl->expect( mk_recv_err( &EWOULDBLOCK, 'recv()->EWOULDBLOCK' ) );
-    my @responses = map { $_->data } $sut->handle_readable();
+    my ( $err, @responses ) = $sut->handle_readable();
+    @responses = map { $_->data } @responses;
 
     $ctl->done_ok();
     test_wants( $sut, { read => 1 }, 'still awaiting responses' );
-    is_with_context \@responses, [], 'no responses were returned';
+    eq_or_diff {
+        err       => $err,
+        responses => \@responses
+      },
+      {
+        err       => Zonemaster::Engine::Async::OsError->from_mnemonic( 'EWOULDBLOCK' ),
+        responses => [],
+      },
+      'socket-level EWOULDBLOCK and no terminated tasks';
 };
 
 subtest 'handle_readable rejects empty response' => sub {
@@ -374,26 +405,50 @@ subtest 'handle_readable rejects empty response' => sub {
     $ctl->expect( mk_recv_data( $QUERY_1{server}, '', 'ignore empty response' ) );
     $ctl->expect( mk_recv_err( &EWOULDBLOCK, 'recv()->EWOULDBLOCK' ) );
 
-    my @responses = map { $_->data } $sut->handle_readable();
+    my ( $err, @responses ) = $sut->handle_readable();
+    @responses = map { $_->data } @responses;
 
     $ctl->done_ok();
     test_wants( $sut, { read => 1 }, 'still awaiting responses' );
-    is_with_context \@responses, [], 'no responses were returned';
+    eq_or_diff {
+        err       => $err,
+        responses => \@responses
+      },
+      {
+        err       => Zonemaster::Engine::Async::OsError->from_mnemonic( 'EWOULDBLOCK' ),
+        responses => [],
+      },
+      'socket-level EWOULDBLOCK and no terminated tasks';
 };
 
 subtest 'handle_readable rejects unparsable response' => sub {
+    note 'prepare: build system under test';
     my ( $sut, $ctl ) = setup( \%QUERY_1 );
 
+    note 'prepare: build a buffer with a DNS header minus one byte';
     my $message = substr( dns_msg( %RESPONSE_1 ), 0, 13 );
 
+    note 'prepare: send an unparsable response, then signal no more input';
     $ctl->expect( mk_recv_data( $QUERY_1{server}, $message, 'reject unparsable response' ) );
     $ctl->expect( mk_recv_err( &EWOULDBLOCK, 'nothing more to recv, presently' ) );
 
-    my @responses = map { $_->data } $sut->handle_readable();
+    $log->clear();
+    note 'test: read socket';
+    my ( $err, @responses ) = $sut->handle_readable();
+    @responses = map { $_->data } @responses;
 
     $ctl->done_ok();
     test_wants( $sut, { read => 1 }, 'still awaiting responses' );
-    is_with_context \@responses, [], 'no responses were returned';
+    eq_or_diff {
+        err       => $err,
+        responses => \@responses
+      },
+      {
+        err       => Zonemaster::Engine::Async::OsError->from_mnemonic( 'EWOULDBLOCK' ),
+        responses => [],
+      },
+      'socket-level EWOULDBLOCK and no terminated tasks';
+    $log->contains_ok( "parse error" );
 };
 
 subtest 'handle_readable rejects questionless response' => sub {
@@ -405,11 +460,22 @@ subtest 'handle_readable rejects questionless response' => sub {
     $ctl->expect( mk_recv_data( $QUERY_1{server}, $message, 'reject questionless response' ) );
     $ctl->expect( mk_recv_err( &EWOULDBLOCK, 'nothing more to recv, presently' ) );
 
-    my @responses = map { $_->data } $sut->handle_readable();
+    $log->clear();
+    my ( $err, @responses ) = $sut->handle_readable();
+    @responses = map { $_->data } @responses;
 
     $ctl->done_ok();
     test_wants( $sut, { read => 1 }, 'still awaiting responses' );
-    is_with_context \@responses, [], 'no responses were returned';
+    eq_or_diff {
+        err       => $err,
+        responses => \@responses
+      },
+      {
+        err       => Zonemaster::Engine::Async::OsError->from_mnemonic( 'EWOULDBLOCK' ),
+        responses => [],
+      },
+      'socket-level EWOULDBLOCK and no terminated tasks';
+    $log->contains_ok( "QDCOUNT=0" );
 };
 
 subtest 'handle_readable rejects response with QR=0' => sub {
@@ -418,11 +484,22 @@ subtest 'handle_readable rejects response with QR=0' => sub {
     $ctl->expect( mk_recv_ok( { %RESPONSE_1, qr => 0 }, 'ignore response with QR=0' ) );
     $ctl->expect( mk_recv_err( &EWOULDBLOCK, 'nothing more to recv, presently' ) );
 
-    my @responses = map { $_->data } $sut->handle_readable();
+    $log->clear();
+    my ( $err, @responses ) = $sut->handle_readable();
+    @responses = map { $_->data } @responses;
 
     $ctl->done_ok();
     test_wants( $sut, { read => 1 }, 'still awaiting responses' );
-    is_with_context \@responses, [], 'no responses were returned';
+    eq_or_diff {
+        err       => $err,
+        responses => \@responses
+      },
+      {
+        err       => Zonemaster::Engine::Async::OsError->from_mnemonic( 'EWOULDBLOCK' ),
+        responses => [],
+      },
+      'socket-level EWOULDBLOCK and no terminated tasks';
+    $log->contains_ok( "QR=0" );
 };
 
 subtest 'handle_readable rejects response with deviating QID' => sub {
@@ -431,11 +508,22 @@ subtest 'handle_readable rejects response with deviating QID' => sub {
     $ctl->expect( mk_recv_ok( { %RESPONSE_1, qid => 4 }, 'ignore response with deviating QID' ) );
     $ctl->expect( mk_recv_err( &EWOULDBLOCK, 'nothing more to recv, presently' ) );
 
-    my @responses = map { $_->data } $sut->handle_readable();
+    $log->clear();
+    my ( $err, @responses ) = $sut->handle_readable();
+    @responses = map { $_->data } @responses;
 
     $ctl->done_ok();
     test_wants( $sut, { read => 1 }, 'still awaiting responses' );
-    is_with_context \@responses, [], 'no responses were returned';
+    eq_or_diff {
+        err       => $err,
+        responses => \@responses
+      },
+      {
+        err       => Zonemaster::Engine::Async::OsError->from_mnemonic( 'EWOULDBLOCK' ),
+        responses => [],
+      },
+      'socket-level EWOULDBLOCK and no terminated tasks';
+    $log->contains_ok( "QID" );
 };
 
 subtest 'handle_readable rejects mismatched QNAME after matched QID' => sub {
@@ -444,11 +532,22 @@ subtest 'handle_readable rejects mismatched QNAME after matched QID' => sub {
     $ctl->expect( mk_recv_ok( { %RESPONSE_1, qname => '4.test' }, 'ignore response with deviating QNAME' ) );
     $ctl->expect( mk_recv_err( &EWOULDBLOCK, 'nothing more to recv, presently' ) );
 
-    my @responses = map { $_->data } $sut->handle_readable();
+    $log->clear();
+    my ( $err, @responses ) = $sut->handle_readable();
+    @responses = map { $_->data } @responses;
 
     $ctl->done_ok();
     test_wants( $sut, { read => 1 }, 'still awaiting responses' );
-    is_with_context \@responses, [], 'no responses were returned';
+    eq_or_diff {
+        err       => $err,
+        responses => \@responses
+      },
+      {
+        err       => Zonemaster::Engine::Async::OsError->from_mnemonic( 'EWOULDBLOCK' ),
+        responses => [],
+      },
+      'socket-level EWOULDBLOCK and no terminated tasks';
+    $log->contains_ok( "QNAME" );
 };
 
 subtest 'handle_readable rejects mismatched QTYPE after matched QID' => sub {
@@ -457,11 +556,22 @@ subtest 'handle_readable rejects mismatched QTYPE after matched QID' => sub {
     $ctl->expect( mk_recv_ok( { %RESPONSE_1, qtype => 'AAAA' }, 'ignore response with deviating QTYPE' ) );
     $ctl->expect( mk_recv_err( &EWOULDBLOCK, 'nothing more to recv, presently' ) );
 
-    my @responses = map { $_->data } $sut->handle_readable();
+    $log->clear();
+    my ( $err, @responses ) = $sut->handle_readable();
+    @responses = map { $_->data } @responses;
 
     $ctl->done_ok();
     test_wants( $sut, { read => 1 }, 'still awaiting responses' );
-    is_with_context \@responses, [], 'no responses were returned';
+    eq_or_diff {
+        err       => $err,
+        responses => \@responses
+      },
+      {
+        err       => Zonemaster::Engine::Async::OsError->from_mnemonic( 'EWOULDBLOCK' ),
+        responses => [],
+      },
+      'socket-level EWOULDBLOCK and no terminated tasks';
+    $log->contains_ok( "QTYPE" );
 };
 
 subtest 'handle_readable rejects mismatched QCLASS after matched QID' => sub {
@@ -470,11 +580,24 @@ subtest 'handle_readable rejects mismatched QCLASS after matched QID' => sub {
     $ctl->expect( mk_recv_ok( { %RESPONSE_1, qclass => 'CH' }, 'ignore response with deviating QCLASS' ) );
     $ctl->expect( mk_recv_err( &EWOULDBLOCK, 'nothing more to recv, presently' ) );
 
-    my @responses = map { $_->data } $sut->handle_readable();
+    $log->clear();
+    my ( $err, @responses ) = $sut->handle_readable();
+    @responses = map { $_->data } @responses;
 
     $ctl->done_ok();
     test_wants( $sut, { read => 1 }, 'still awaiting responses' );
-    is_with_context \@responses, [], 'no responses were returned';
+    $ctl->done_ok();
+    test_wants( $sut, { read => 1 }, 'still awaiting responses' );
+    eq_or_diff {
+        err       => $err,
+        responses => \@responses
+      },
+      {
+        err       => Zonemaster::Engine::Async::OsError->from_mnemonic( 'EWOULDBLOCK' ),
+        responses => [],
+      },
+      'socket-level EWOULDBLOCK and no terminated tasks';
+    $log->contains_ok( "QCLASS" );
 };
 
 subtest 'handle_readable handles response with deviating server' => sub {
@@ -483,32 +606,49 @@ subtest 'handle_readable handles response with deviating server' => sub {
     $ctl->expect( mk_recv_ok( { %RESPONSE_1, server => $QUERY_4{server} }, 'ignore response with deviating server' ) );
     $ctl->expect( mk_recv_err( &EWOULDBLOCK, 'nothing more to recv, presently' ) );
 
-    my @responses = map { $_->data } $sut->handle_readable();
+    $log->clear();
+    my ( $err, @responses ) = $sut->handle_readable();
+    @responses = map { $_->data } @responses;
 
     $ctl->done_ok();
     test_wants( $sut, { read => 1 }, 'still awaiting responses' );
-    is_with_context \@responses, [], 'no responses were returned';
+    eq_or_diff {
+        err       => $err,
+        responses => \@responses
+      },
+      {
+        err       => Zonemaster::Engine::Async::OsError->from_mnemonic( 'EWOULDBLOCK' ),
+        responses => [],
+      },
+      'socket-level EWOULDBLOCK and no terminated tasks';
+    $log->contains_ok( "server" );
 };
 
 subtest 'handle_readable accepts case-variant QNAME' => sub {
     my ( $sut, $ctl ) = setup( \%QUERY_1 );
 
     $ctl->expect( mk_recv_ok( { %RESPONSE_1, qname => '1.TEST' }, 'case variant' ) );
-    my @responses = map { $_->data } $sut->handle_readable();
+
+    my ( $err, @responses ) = $sut->handle_readable();
+    @responses = map { $_->data } @responses;
 
     $ctl->done_ok();
     cmp_ok scalar( @responses ), '==', 1, 'accepted';
     is_with_context \@responses, [ dns_msg( %RESPONSE_1, qname => '1.TEST' ) ], 'response 1 was returned';
+    is $err, undef, 'no socket-level error';
 };
 
 subtest 'handle_readable accepts TC=1' => sub {
     my ( $sut, $ctl ) = setup( \%QUERY_1 );
 
     $ctl->expect( mk_recv_ok( { %RESPONSE_1, tc => 1 }, 'truncation' ) );
-    my @responses = map { $_->data } $sut->handle_readable();
+
+    my ( $err, @responses ) = $sut->handle_readable();
+    @responses = map { $_->data } @responses;
 
     $ctl->done_ok();
     is_with_context \@responses, [ dns_msg( %RESPONSE_1, tc => 1 ) ], 'response 1 was returned';
+    is $err, undef, 'no socket-level error';
 };
 
 subtest 'cancel ignores unrecognized exhanges' => sub {
@@ -584,32 +724,59 @@ subtest 'a sequence' => sub {
     $ctl->expect( mk_recv_ok( {%RESPONSE_1}, 'accept one response' ) );
     $ctl->expect( mk_recv_err( &EWOULDBLOCK, 'return on EWOULDBLOCK' ) );
 
-    my @responses1 = map { $_->data } $sut->handle_readable();
+    my ( $err1, @responses1 ) = $sut->handle_readable();
+    @responses1 = map { $_->data } @responses1;
 
     $ctl->done_ok();
     test_wants( $sut, { read => 3 }, 'should want to read more responses' );
-    is_with_context \@responses1, [ dns_msg( %RESPONSE_1 ) ], 'response 1 was returned';
+    eq_or_diff {
+        err       => $err1,
+        responses => \@responses1
+      },
+      {
+        err       => Zonemaster::Engine::Async::OsError->from_mnemonic( 'EWOULDBLOCK' ),
+        responses => [ dns_msg( %RESPONSE_1 ) ],
+      },
+      'socket-level EWOULDBLOCK and response 1 returned';
 
     note 'handle_readable handles multiple responses';
     $ctl->expect( mk_recv_ok( {%RESPONSE_3}, 'accept one response' ) );
     $ctl->expect( mk_recv_ok( {%RESPONSE_2}, 'accept another response' ) );
     $ctl->expect( mk_recv_err( &EWOULDBLOCK, 'return on EWOULDBLOCK' ) );
 
-    my @responses2 = map { $_->data } $sut->handle_readable();
+    my ( $err2, @responses2 ) = $sut->handle_readable();
+    @responses2 = map { $_->data } @responses2;
 
     $ctl->done_ok();
     test_wants( $sut, { read => 1 }, 'should want to read more responses' );
-    is_with_context \@responses2, [ dns_msg( %RESPONSE_3 ), dns_msg( %RESPONSE_2 ) ], 'responses 3 and 2 were returned';
+    eq_or_diff {
+        err       => $err2,
+        responses => \@responses2
+      },
+      {
+        err       => Zonemaster::Engine::Async::OsError->from_mnemonic( 'EWOULDBLOCK' ),
+        responses => [ dns_msg( %RESPONSE_3 ), dns_msg( %RESPONSE_2 ) ],
+      },
+      'socket-level EWOULDBLOCK and responses 3 and 2 returned';
 
     note 'handle_readable stops waiting to read after last response';
     $ctl->expect(
         mk_recv_ok( {%RESPONSE_4}, 'accept response with qr=1 and matching (server, qid, qname, qtype, qclass)' ) );
 
-    my @responses3 = map { $_->data } $sut->handle_readable();
+    my ( $err3, @responses3 ) = $sut->handle_readable();
+    @responses3 = map { $_->data } @responses3;
 
-    is_with_context \@responses3, [ dns_msg( %RESPONSE_4 ) ], 'response 4 was returned';
     $ctl->done_ok();
     test_wants( $sut, {}, 'should not want read after receiving all responses' );
+    eq_or_diff {
+        err       => $err3,
+        responses => \@responses3
+      },
+      {
+        err       => undef,
+        responses => [ dns_msg( %RESPONSE_4 ) ],
+      },
+      'no socket-level error and response 4 returned';
 };
 
 had_no_warnings;

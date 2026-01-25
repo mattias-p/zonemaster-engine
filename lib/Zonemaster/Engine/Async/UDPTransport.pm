@@ -69,6 +69,8 @@ use Log::Any qw( $log );
 use IO::Socket;
 use Role::Tiny::With          qw( with );
 use Zonemaster::Engine::Async qw( pack_sockaddr unpack_sockaddr );
+use Zonemaster::Engine::Async::OsError;
+use Zonemaster::Engine::Async::LdnsError;
 
 with 'Zonemaster::Engine::Async::TransportRole';
 
@@ -215,7 +217,7 @@ sub inflight_count {
     return scalar keys $self->{_active}->%*;
 }
 
-=head2 handle_writable( )
+=head2 handle_writable( ) -> $socket_err, @failures
 
 Attempt to send all pending datagrams until the socket would block or the queue is empty.
 
@@ -236,8 +238,8 @@ failed send operations that were neither recognized as socket-level or bug indic
 sub handle_writable {
     my ( $self ) = @_;
 
-    my $i            = 0;
-    my $socket_errno = 0;
+    my $i          = 0;
+    my $socket_err = undef;
     my @results;
 
   QUEUE:
@@ -260,13 +262,13 @@ sub handle_writable {
                 $i += 1;
                 next QUEUE;
             }
-            elsif ( $!{EINTR} || $!{EAGAIN} || $!{EWOULDBLOCK} || $!{ENOBUFS} || $!{ENOMEM} ) {
-                $socket_errno = $ERRNO;
-                last QUEUE;
-            }
             elsif ( $!{EBADF} || $!{ENOTSOCK} || $!{EFAULT} || $!{EDESTADDRREQ} || $!{EISCONN} ) {
                 my ( $port, $ip ) = unpack_sockaddr( $dst_addr );
                 croak sprintf( "send to %s:%d failed: %s (%d)", $ip, $port, $ERRNO, $ERRNO );
+            }
+            elsif ( $!{EINTR} || $!{EAGAIN} || $!{EWOULDBLOCK} || $!{ENOBUFS} || $!{ENOMEM} ) {
+                $socket_err = Zonemaster::Engine::Async::OsError->from_errno;
+                last QUEUE;
             }
             else {
                 push @results, $qid, $ERRNO;
@@ -277,10 +279,10 @@ sub handle_writable {
 
     splice $self->{_pending}->@*, 0, $i;
 
-    return $socket_errno, @results;
+    return $socket_err, @results;
 } ## end sub handle_writable
 
-=head2 handle_readable( ) -> @packets
+=head2 handle_readable( ) -> $socket_errno, @packets
 
 Read and validate as many UDP datagrams as are immediately available and match
 active exchanges. Returns an ERRNO value and a list of L<Zonemaster::LDNS::Packet>
@@ -329,23 +331,27 @@ case-insensitive C<QNAME>.
 
 =cut
 
+use Data::Dumper;
+
 sub handle_readable {
     my ( $self ) = @_;
 
+    my $socket_err = undef;
     my @responses;
     while ( $self->{_active}->%* ) {
         my $buffer   = '';
         my $src_addr = $self->{_socket}->recv( $buffer, MAX_RECV_HINT );
+        if ( $!{EINTR} ) {
+            $src_addr = $self->{_socket}->recv( $buffer, MAX_RECV_HINT );
+        }
+
         if ( !$src_addr ) {
-            if ( $!{EINTR} ) {
-                $log->trace( 'handle_readable: recv->EINTR; retry' );
-                next;
+            if ( $!{EBADF} || $!{ENOTSOCK} || $!{EINVAL} || $!{EFAULT} ) {
+                croak sprintf( "recv failed: %s (%d)", $ERRNO, $ERRNO );
             }
-            if ( $!{EWOULDBLOCK} || $!{EAGAIN} ) {
-                $log->trace( 'handle_readable: recv->EWOULDBLOCK|EAGAIN; return' );
-                last;
-            }
-            croak sprintf( "recv failed: %s (%d)", $ERRNO, $ERRNO );
+
+            $socket_err = Zonemaster::Engine::Async::OsError->from_errno;
+            last;
         }
 
         if ( length $buffer < DNS_HEADER_SIZE ) {
@@ -367,14 +373,20 @@ sub handle_readable {
             redo;
         }
 
-        my $packet = Zonemaster::LDNS::Packet->new_from_wireformat2( $buffer );
-        if ( !defined $packet ) {
-            if ( $!{EBADMSG} ) {
-                $log->trace( 'handle_readable: parse->EBADMSG; retry' );
-                redo;
-            }
-            croak sprintf( "parse failed: %s (%d)", $ERRNO, $ERRNO );
+        my ( $status, $packet ) = Zonemaster::LDNS::Packet->new_from_wireformat2( $buffer );
+
+        if ( $status->is_internal_err ) {
+            croak "parsing packet using ldns: $status";
         }
+        elsif ( $status->is_mem_err ) {
+            $socket_err = Zonemaster::Engine::Async::LdnsError->new( $status );
+            last;
+        }
+        elsif ( !$status->is_ok ) {
+            $log->tracef( 'handle_readable: parse error: %s', $status->message );
+            redo;
+        }
+
         my ( undef, $peer_ip ) = unpack_sockaddr( $peer_addr );
         $packet->answerfrom( $peer_ip );
 
@@ -406,7 +418,7 @@ sub handle_readable {
         delete $self->{_active}{$qid};
     } ## end while ( $self->{_active}->...)
 
-    return @responses;
+    return $socket_err, @responses;
 } ## end sub handle_readable
 
 sub want_write {
