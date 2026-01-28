@@ -1,11 +1,11 @@
-#!perl
 package Test::Nameserver;
 use v5.26;
 use warnings;
 
 use Net::DNS::Nameserver;
-use Time::HiRes    qw(usleep);
+use Net::DNS::Resolver;
 use IPC::ShareLite qw( LOCK_EX );
+use Time::HiRes    qw( sleep time );
 
 my $shm = IPC::ShareLite->new(
     -key     => 0x1234,
@@ -23,10 +23,11 @@ sub start {
     my $delay_ms = $opt{delay_ms} // 0;
 
     # choose a high, likely-free port once; avoids privileged ports
+    my $addr = '127.0.0.1';
     my $port = 15353 + int( rand 1000 );
 
     my $ns = Net::DNS::Nameserver->new(
-        LocalAddr    => '127.0.0.1',
+        LocalAddr    => $addr,
         LocalPort    => $port,
         Verbose      => 0,
         ReplyHandler => sub {
@@ -40,7 +41,7 @@ sub start {
             return if $mode eq 'drop_once' && $count == 1;
 
             if ( $mode eq 'delay_second' && $count == 2 ) {
-                usleep( 1000 * $delay_ms );    # blocks server subprocess only
+                sleep( $delay_ms / 1000.0 );    # blocks server subprocess only
             }
 
             $shm->unlock;
@@ -53,7 +54,40 @@ sub start {
 
     $ns->start_server( 600 );    # runs server subprocess(es) and returns immediately
 
+    wait_for_dns( addr => $addr, port => $port, tcp => 0 );
+    wait_for_dns( addr => $addr, port => $port, tcp => 1 );
+
     return ( $ns, $port );
 } ## end sub start
+
+sub wait_for_dns {
+    my ( %opt ) = @_;
+    my $addr    = $opt{addr}    // '127.0.0.1';
+    my $port    = $opt{port}    // 15353;
+    my $timeout = $opt{timeout} // 2.0;
+    my $use_tcp = $opt{tcp}     // 0;
+
+    my $res = Net::DNS::Resolver->new(
+        nameservers => [$addr],
+        port        => $port,
+        recurse     => 0,
+    );
+
+    # send() uses retry/retrans; tune for fast polling
+    $res->retrans( 0.1 );
+    $res->retry( 1 );
+
+    # Optional: force TCP instead of UDP
+    $res->usevc( 1 ) if $use_tcp;    # TCP "virtual circuit"
+
+    my $deadline = time() + $timeout;
+    while ( time() < $deadline ) {
+        my $pkt = $res->send( 'example.com', 'SOA' );    # any qname/qtype you expect to answer
+        return 1 if $pkt;                                # any response means "ready"
+        sleep 0.050;
+    }
+
+    die "nameserver not responding within ${timeout}s: " . $res->errorstring . "\n";
+} ## end sub wait_for_dns
 
 1;
