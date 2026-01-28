@@ -4,8 +4,8 @@ use v5.26;
 use warnings;
 
 use Net::DNS::Nameserver;
-use Time::HiRes qw(usleep);
-use IPC::ShareLite;
+use Time::HiRes    qw(usleep);
+use IPC::ShareLite qw( LOCK_EX );
 
 my $shm = IPC::ShareLite->new(
     -key     => 0x1234,
@@ -31,7 +31,7 @@ sub start {
         Verbose      => 0,
         ReplyHandler => sub {
             my ( $qname, $qclass, $qtype, $peerhost, $query, $conn ) = @_;
-            $shm->lock;
+            $shm->lock( LOCK_EX );
             my $count = $shm->fetch;
             $count++;
             $shm->store( $count );
