@@ -98,28 +98,23 @@ sub new {
     my ( $class, %args ) = @_;
     my (    #
         $socket,
-        $peerport,
       )
       = delete @args{
         qw(
           socket
-          peerport
         )
       };
+    if ( %args ) {
+        croak 'unrecognized arguments: ' . join( ', ', sort keys %args );
+    }
 
-    $socket //= do {
-        my $socket = IO::Socket::INET->new( Proto => 'udp' )
-          or croak "Cannot create socket UDP socket: $ERRNO";
-        $socket->blocking( 0 );
-        $socket;
-    };
-    $peerport //= 53;
+    croak 'socket must have defined peerhost and peerport'
+      if !defined $socket->peerhost || !defined $socket->peerport;
 
     my $obj = {
-        _peerport => $peerport,
-        _socket   => $socket,
-        _pending  => [],          # an array of hashes with keys {qid, question, message}
-        _active   => {},          # hash from QID to [sockaddr, qname, qtype, qclass] arrayref
+        _socket  => $socket,
+        _pending => [],        # an array of hashes with keys {qid, question, message}
+        _active  => {},        # hash from QID to [sockaddr, qname, qtype, qclass] arrayref
     };
 
     return bless $obj, $class;
@@ -160,10 +155,12 @@ No network I/O happens until C<handle_writable> is called.
 sub enqueue {
     my ( $self, $qid, $query ) = @_;
 
-    my $dst_addr        = pack_sockaddr( $query->server(), $self->{_peerport} );
+    croak 'mismatching server address'
+      if $query->server() ne $self->{_socket}->peerhost();
+
     my $packet          = $query->mk_packet( $qid );
     my ( $question_rr ) = $packet->question();
-    my $question        = [ $dst_addr, $question_rr->name(), $question_rr->type(), $question_rr->class() ];
+    my $question        = [ $question_rr->name(), $question_rr->type(), $question_rr->class() ];
 
     push $self->{_pending}->@*,
       {
@@ -246,14 +243,13 @@ sub handle_writable {
     while ( $i <= $self->{_pending}->$#* ) {
         my ( $qid, $question, $message ) =
           $self->{_pending}[$i]->@{qw( qid question message )};
-        my $dst_addr = $question->[0];
 
         local $ERRNO;
         for ( ; ; ) {
             $ERRNO = 0;
-            my $sent = $self->{_socket}->send( $message, 0, $dst_addr );
+            my $sent = $self->{_socket}->send( $message );
             if ( $!{EINTR} ) {
-                $sent = $self->{_socket}->send( $message, 0, $dst_addr );
+                $sent = $self->{_socket}->send( $message );
             }
 
             if ( defined $sent ) {
@@ -263,8 +259,12 @@ sub handle_writable {
                 next QUEUE;
             }
             elsif ( $!{EBADF} || $!{ENOTSOCK} || $!{EFAULT} || $!{EDESTADDRREQ} || $!{EISCONN} ) {
-                my ( $port, $ip ) = unpack_sockaddr( $dst_addr );
-                croak sprintf( "send to %s:%d failed: %s (%d)", $ip, $port, $ERRNO, $ERRNO );
+                croak sprintf(
+                    "send to %s:%d failed: %s (%d)",
+                    $self->{_socket}->peerhost,
+                    $self->{_socket}->peerport,
+                    $ERRNO, $ERRNO
+                );
             }
             elsif ( $!{EINTR} || $!{EAGAIN} || $!{EWOULDBLOCK} || $!{ENOBUFS} || $!{ENOMEM} ) {
                 $socket_err = Zonemaster::Engine::Async::OsError->from_errno;
@@ -331,25 +331,26 @@ case-insensitive C<QNAME>.
 
 =cut
 
-use Data::Dumper;
-
 sub handle_readable {
     my ( $self ) = @_;
 
     my $socket_err = undef;
     my @responses;
+    local $ERRNO;
     while ( $self->{_active}->%* ) {
-        my $buffer   = '';
-        my $src_addr = $self->{_socket}->recv( $buffer, MAX_RECV_HINT );
+        my $buffer = '';
+
+        $ERRNO = 0;
+        $self->{_socket}->recv( $buffer, MAX_RECV_HINT );
         if ( $!{EINTR} ) {
-            $src_addr = $self->{_socket}->recv( $buffer, MAX_RECV_HINT );
+            $self->{_socket}->recv( $buffer, MAX_RECV_HINT );
         }
 
-        if ( !$src_addr ) {
-            if ( $!{EBADF} || $!{ENOTSOCK} || $!{EINVAL} || $!{EFAULT} ) {
-                croak sprintf( "recv failed: %s (%d)", $ERRNO, $ERRNO );
-            }
+        if ( $!{EBADF} || $!{ENOTSOCK} || $!{EINVAL} || $!{EFAULT} ) {
+            croak sprintf( "recv failed: %s (%d)", $ERRNO, $ERRNO );
+        }
 
+        if ( $ERRNO ) {
             $socket_err = Zonemaster::Engine::Async::OsError->from_errno;
             last;
         }
@@ -366,12 +367,7 @@ sub handle_readable {
             redo;
         }
 
-        my ( $peer_addr, $qname, $qtype, $qclass ) = $question->@*;
-
-        if ( $peer_addr ne $src_addr ) {
-            $log->trace( 'handle_readable: no matching QID/server; retry' );
-            redo;
-        }
+        my ( $qname, $qtype, $qclass ) = $question->@*;
 
         my ( $status, $packet ) = Zonemaster::LDNS::Packet->new_from_wireformat2( $buffer );
 
@@ -387,8 +383,7 @@ sub handle_readable {
             redo;
         }
 
-        my ( undef, $peer_ip ) = unpack_sockaddr( $peer_addr );
-        $packet->answerfrom( $peer_ip );
+        $packet->answerfrom( $self->{_socket}->peerhost() );
 
         if ( !$packet->qr() ) {
             $log->trace( 'handle_readable: QR=0; retry' );

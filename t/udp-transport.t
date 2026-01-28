@@ -12,17 +12,17 @@ use lib 't';
 use lib 't/lib';
 use Log::Any::Test;
 use Test2::V0;
-use Test::NoWarnings 'had_no_warnings';
+use Test2::Plugin::NoWarnings echo => 1;
 
 use English;
-use Errno             qw( EINTR EAGAIN EWOULDBLOCK ENOBUFS EMSGSIZE ENETUNREACH EINVAL ENETDOWN );
-use Log::Any          qw($log);
-use Mock::Scripted    qw( new_scripted_mock );
-use Scalar::Util      qw( blessed );
-use Test::Deep        qw( ignore );
-use Test::Differences qw( eq_or_diff );
-use Test::Exception;
-use TestUtil qw( is_with_context );
+use Errno                   qw( EINTR EAGAIN EWOULDBLOCK ENOBUFS EMSGSIZE ENETUNREACH EINVAL ENETDOWN );
+use Log::Any                qw($log);
+use Mock::Scripted          qw( new_scripted_mock );
+use Scalar::Util            qw( blessed );
+use Test::Deep              qw( ignore );
+use Test::Differences       qw( eq_or_diff );
+use Test2::Tools::Exception qw( dies );
+use TestUtil                qw( is_with_context );
 
 use Zonemaster::Engine::Async qw( pack_sockaddr );
 use Zonemaster::Engine::Async::Query;
@@ -80,13 +80,12 @@ sub mk_recv_ok {
 sub mk_send_err {
     my ( $query, $errno, $name ) = @_;
 
-    my $message  = dns_msg( $query->%* );
-    my $sockaddr = pack_sockaddr( $query->{server}, DNS_PORT );
+    my $message = dns_msg( $query->%* );
 
     return {
         name   => $name,
         method => 'send',
-        args   => [ $message, 0, $sockaddr ],
+        args   => [$message],
         do     => sub { $ERRNO = $errno; undef },
     };
 }
@@ -94,13 +93,12 @@ sub mk_send_err {
 sub mk_send_ok {
     my ( $query, $name ) = @_;
 
-    my $message  = dns_msg( $query->%* );
-    my $sockaddr = pack_sockaddr( $query->{server}, DNS_PORT );
+    my $message = dns_msg( $query->%* );
 
     return {
         name    => $name,
         method  => 'send',
-        args    => [ $message, 0, $sockaddr ],
+        args    => [$message],
         returns => length( $message ),
     };
 }
@@ -195,8 +193,8 @@ C<Mock::Scripted::Ctl>;
 sub setup {
     my ( @queries ) = @_;
 
-    my ( $ctl, $socket ) = new_scripted_mock( qw( send recv ) );
-    my $sut = Zonemaster::Engine::Async::UDPTransport->new( socket => $socket );
+    my ( $sut, $ctl ) = new_mock_socket();
+
     for my $query ( @queries ) {
         prep_send( $sut, $ctl, $query->%* );
     }
@@ -204,10 +202,21 @@ sub setup {
     return ( $sut, $ctl );
 }
 
-my %QUERY_1    = ( qid => 1, server => '192.0.2.1',   qname => '1.test', qtype => 'SOA',  qclass => 'IN' );
-my %QUERY_2    = ( qid => 2, server => '192.0.2.2',   qname => '2.test', qtype => 'NS',   qclass => 'IN' );
-my %QUERY_3    = ( qid => 3, server => '192.0.2.3',   qname => '3.test', qtype => 'A',    qclass => 'IN' );
-my %QUERY_4    = ( qid => 4, server => '2001:db8::1', qname => '4.test', qtype => 'AAAA', qclass => 'IN' );
+sub new_mock_socket {
+    my ( $ctl, $socket ) = new_scripted_mock( qw( send recv ) );
+    my ( $mock_ctl ) = mocked( $socket );    # returns Test2::Mock object(s)
+    $mock_ctl->add( peerport => sub { 15353 } );
+    $mock_ctl->add( peerhost => sub { '192.0.2.1' } );
+
+    my $sut = Zonemaster::Engine::Async::UDPTransport->new( socket => $socket );
+
+    return ( $sut, $ctl );
+}
+
+my %QUERY_1    = ( qid => 1, server => '192.0.2.1', qname => '1.test', qtype => 'SOA',  qclass => 'IN' );
+my %QUERY_2    = ( qid => 2, server => '192.0.2.1', qname => '2.test', qtype => 'NS',   qclass => 'IN' );
+my %QUERY_3    = ( qid => 3, server => '192.0.2.1', qname => '3.test', qtype => 'A',    qclass => 'IN' );
+my %QUERY_4    = ( qid => 4, server => '192.0.2.1', qname => '4.test', qtype => 'AAAA', qclass => 'IN' );
 my %RESPONSE_1 = ( %QUERY_1, qr => 1 );
 my %RESPONSE_2 = ( %QUERY_2, qr => 1 );
 my %RESPONSE_3 = ( %QUERY_3, qr => 1 );
@@ -242,10 +251,10 @@ subtest 'errnos causing handle_writable to throw' => sub {
             $sut->enqueue( to_query( %QUERY_1 ) );
             $ctl->expect( mk_send_err( {%QUERY_1}, $errno, "send(query 1)->$mnemonic" ) );
 
-            throws_ok {
+            my $e = dies {
                 $sut->handle_writable();
-            }
-            qr/\Q($numeric)\E/, "handle_writable should throw on $mnemonic";
+            };
+            like $e, qr/\Q($numeric)\E/, "handle_writable should throw on $mnemonic";
             $ctl->done_ok( "socket should receive all expected calls" );
             #test_wants( $sut, {}, 'failed send should drop exchange' );
         };
@@ -268,13 +277,13 @@ subtest 'errnos causing handle_readable to throw' => sub {
               if !defined $errno;
 
             my ( $sut, $ctl ) = setup( \%QUERY_1 );
-
             $ctl->expect( mk_recv_err( $errno, "recv()->$mnemonic" ), );
-            throws_ok {
-                $sut->handle_readable();
-            }
-            qr/\Q($numeric)\E/, "$mnemonic is fatal";
 
+            my $e = dies {
+                $sut->handle_readable();
+            };
+
+            like $e, qr/\Q($numeric)\E/, "$mnemonic is fatal";
             $ctl->done_ok( "$mnemonic consumed its scripted call" );
             test_wants( $sut, { read => 1 }, 'failed recv should keep exchange in queue' );
         };
@@ -341,8 +350,7 @@ subtest 'errnos causing handle_readable to return' => sub {
 };
 
 subtest 'handle_writable should retry once on EINTR' => sub {
-    my ( $ctl, $socket ) = new_scripted_mock( qw( send recv ) );
-    my $sut = Zonemaster::Engine::Async::UDPTransport->new( socket => $socket );
+    my ( $sut, $ctl ) = new_mock_socket();
     $sut->enqueue( to_query( %QUERY_1 ) );
 
     $ctl->expect( mk_send_err( {%QUERY_1}, &EINTR,       'send(query 1)->EINTR' ) );
@@ -356,8 +364,7 @@ subtest 'handle_writable should retry once on EINTR' => sub {
 };
 
 subtest 'handle_writable should not retry once on EINTR' => sub {
-    my ( $ctl, $socket ) = new_scripted_mock( qw( send recv ) );
-    my $sut = Zonemaster::Engine::Async::UDPTransport->new( socket => $socket );
+    my ( $sut, $ctl ) = new_mock_socket();
     $sut->enqueue( to_query( %QUERY_1 ) );
 
     $ctl->expect( mk_send_err( {%QUERY_1}, &EINTR, 'send(query 1)->EINTR' ) );
@@ -600,30 +607,6 @@ subtest 'handle_readable rejects mismatched QCLASS after matched QID' => sub {
     $log->contains_ok( "QCLASS" );
 };
 
-subtest 'handle_readable handles response with deviating server' => sub {
-    my ( $sut, $ctl ) = setup( \%QUERY_1 );
-
-    $ctl->expect( mk_recv_ok( { %RESPONSE_1, server => $QUERY_4{server} }, 'ignore response with deviating server' ) );
-    $ctl->expect( mk_recv_err( &EWOULDBLOCK, 'nothing more to recv, presently' ) );
-
-    $log->clear();
-    my ( $err, @responses ) = $sut->handle_readable();
-    @responses = map { $_->data } @responses;
-
-    $ctl->done_ok();
-    test_wants( $sut, { read => 1 }, 'still awaiting responses' );
-    eq_or_diff {
-        err       => $err,
-        responses => \@responses
-      },
-      {
-        err       => Zonemaster::Engine::Async::OsError->from_mnemonic( 'EWOULDBLOCK' ),
-        responses => [],
-      },
-      'socket-level EWOULDBLOCK and no terminated tasks';
-    $log->contains_ok( "server" );
-};
-
 subtest 'handle_readable accepts case-variant QNAME' => sub {
     my ( $sut, $ctl ) = setup( \%QUERY_1 );
 
@@ -779,5 +762,4 @@ subtest 'a sequence' => sub {
       'no socket-level error and response 4 returned';
 };
 
-had_no_warnings;
 done_testing;

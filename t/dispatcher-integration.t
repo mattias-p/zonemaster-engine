@@ -1,6 +1,8 @@
 #!perl
 use v5.26;
 use warnings;
+use lib 't';
+use lib 't/lib';
 use Test::More;
 use lib 't';
 use lib 't/lib';

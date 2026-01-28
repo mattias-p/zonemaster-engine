@@ -14,6 +14,7 @@ use Test::More;
 use lib 't';
 use lib 't/lib';
 
+use Errno qw( EAGAIN EWOULDBLOCK );
 use Log::Any::Adapter ( 'Stderr' );
 use IO::Socket::INET;
 use Test::Differences;
@@ -42,12 +43,15 @@ sub to_query {
 }
 
 # ---- Client socket, nonblocking
-my $client = IO::Socket::INET->new( Proto => 'udp' )
-  or die "client socket: $!";
-IO::Handle::blocking( $client, 0 );
+my $client = IO::Socket::INET->new(
+    Proto    => 'udp',
+    PeerHost => '127.0.0.1',
+    PeerPort => $srv_port,
+    Blocking => 0,
+) or die "client socket: $!";
 
 # ---- System under test
-my $sut = Zonemaster::Engine::Async::UDPTransport->new( socket => $client, peerport => $srv_port );
+my $sut = Zonemaster::Engine::Async::UDPTransport->new( socket => $client );
 
 # Two queries
 my @cases = (
@@ -78,7 +82,10 @@ is( $sut->send_queue_len, 0, 'pending drained after handle_writable' );
 my @got;
 my $deadline = time() + 3;    # 3s safety
 while ( time() < $deadline ) {
-    my ( undef, @responses2 ) = $sut->handle_readable;
+    my ( $err, @responses2 ) = $sut->handle_readable;
+    $err = 0+ ( $err // 0 );
+    BAIL_OUT( sprintf( "unexpected socket-level error: %s (%d)", $err, $err ) )
+      if $err != 0 && $err != EWOULDBLOCK && $err != EAGAIN;
     push @got, @responses2;
     last if @got == 2;
     usleep 50_000;

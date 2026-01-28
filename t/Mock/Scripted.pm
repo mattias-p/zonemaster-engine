@@ -5,7 +5,7 @@ use warnings;
 use Exporter           qw( import );
 use Test::Deep         qw( eq_deeply );
 use Test2::API         qw( context_do );
-use Test2::Tools::Mock qw( mock );
+use Test2::Tools::Mock qw( mock mocked );
 use TestUtil           qw( friendly_dump );
 
 our @EXPORT_OK = qw( new_scripted_mock );
@@ -80,12 +80,14 @@ sub _process_call {
       : $step->{returns};
 } ## end sub _process_call
 
+use Data::Dumper;
+
 sub new_scripted_mock {
     my ( @allowed_methods ) = @_;
 
     my %allowed = map { $_ => 1 } @allowed_methods;
 
-    my $mock = mock {} => (
+    my $obj = mock {} => (
         add => [
             map {
                 my $method = $_;
@@ -97,16 +99,16 @@ sub new_scripted_mock {
             } keys %allowed
         ]
     );
-    $mock->{_steps} = [];
-    $mock->{_i}     = 0;
+    $obj->{_steps} = [];
+    $obj->{_i}     = 0;
 
     my $controller = bless {
-        _mock    => $mock,
+        _mock    => $obj,
         _allowed => \%allowed,
       },
       'Mock::Scripted::Ctl';
 
-    return ( $controller, $mock );
+    return ( $controller, $obj );
 } ## end sub new_scripted_mock
 
 =head1 Expectation hash
