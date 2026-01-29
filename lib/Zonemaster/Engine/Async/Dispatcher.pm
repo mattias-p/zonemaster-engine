@@ -4,17 +4,18 @@ use warnings;
 
 use Carp qw( croak );
 use English;
-use Errno qw( EINTR ETIMEDOUT );
+use Errno qw( EINTR ENOBUFS ENOMEM ETIMEDOUT );
 use IO::Select;
 use IO::Socket::INET;
 use List::Util qw( max min pairmap );
 use Log::Any   qw( $log );
 use Role::Tiny::With;
-use Time::HiRes qw( clock_gettime CLOCK_MONOTONIC );
+use Scalar::Util qw( refaddr );
+use Time::HiRes  qw( clock_gettime CLOCK_MONOTONIC );
 
 use Zonemaster::Engine::Async qw( errno_names );
+use Zonemaster::Engine::Async::TimeoutError;
 use Zonemaster::Engine::Async::UDPTransport;
-use Zonemaster::Engine::Async::Error qw( $TRANSIENT_KIND );
 
 with 'Zonemaster::Engine::Async::SessionRole';
 
@@ -27,6 +28,7 @@ sub new {
         $qid_allocator,
         $select_fn,
         $transport_factory,
+        $peer_port,
       )
       = delete @args{
         qw(
@@ -35,6 +37,7 @@ sub new {
           qid_allocator
           select_fn
           transport_factory
+          peer_port
         )
       };
     if ( %args ) {
@@ -48,11 +51,15 @@ sub new {
     $mono_time         //= \&_default_mono_time;
     $qid_allocator     //= \&_default_qid_allocator;
     $select_fn         //= \&_default_select_fn;
-    $transport_factory //= \&_default_transport_factory;
+    $transport_factory //= sub {
+        my ( $peer_ip ) = @_;
+        _default_transport_factory( $peer_port, $peer_ip );
+    };
 
     my $obj = {
         _deadlines         => {},
-        _udp               => undef,
+        _udp               => {},
+        _transports        => {},
         _exchange_timeout  => $exchange_timeout,
         _mono_time         => $mono_time,
         _qid_allocator     => $qid_allocator,
@@ -83,16 +90,23 @@ sub add_timeout {
 sub add_request {
     my ( $self, $query ) = @_;
 
-    if ( !defined $self->{_udp} ) {
-        $self->{_udp} = $self->{_transport_factory}();
+    my $peer_ip = $query->server;
+    if ( !exists $self->{_udp}{$peer_ip} ) {
+        my $transport = $self->{_transport_factory}( $peer_ip );
+        my $refaddr   = refaddr( $transport->io_handle );
+        $self->{_udp}{$peer_ip}        = $refaddr;
+        $self->{_transports}{$refaddr} = $transport;
     }
 
     my $qid = $self->add_timeout( $self->{_exchange_timeout} );
 
-    $self->{_udp}->enqueue( $qid, $query );
+    my $refaddr   = $self->{_udp}{$peer_ip};
+    my $transport = $self->{_transports}{$refaddr};
+
+    $transport->enqueue( $qid, $query );
 
     return $qid;
-}
+} ## end sub add_request
 
 =head2 step()
 
@@ -116,16 +130,17 @@ sub step {
         return;
     }
 
-    my $want_read = IO::Select->new();
-    if ( $self->{_udp}->want_read ) {
-        $log->trace( 'step: want read' );
-        $want_read->add( $self->{_udp}->io_handle );
-    }
-
+    my $want_read  = IO::Select->new();
     my $want_write = IO::Select->new();
-    if ( $self->{_udp}->want_write ) {
-        $log->trace( 'step: want write' );
-        $want_write->add( $self->{_udp}->io_handle );
+    for my $transport ( values $self->{_transports}->%* ) {
+        if ( $transport->want_read ) {
+            $log->trace( 'step: want read' );
+            $want_read->add( $transport->io_handle );
+        }
+        if ( $transport->want_write ) {
+            $log->trace( 'step: want write' );
+            $want_write->add( $transport->io_handle );
+        }
     }
 
     my $earliest_deadline = min values $self->{_deadlines}->%*;
@@ -138,15 +153,26 @@ sub step {
         $log->tracef( 'step: select %d %d 0 %fs', scalar $want_read->handles, scalar $want_write->handles, $timeout );
         local $ERRNO = 0;
         if ( my ( $readable, $writable, undef ) = $self->{_select_fn}( $want_read, $want_write, $timeout ) ) {
-            if ( $writable->@* ) {
-                my ( $socket_errno, @new_results ) = $self->{_udp}->handle_writable;
+            for my $handle ( $writable->@* ) {
+                my $refaddr   = refaddr( $handle );
+                my $transport = $self->{_transports}{$refaddr};
+
+                my ( $err, @new_results ) = $transport->handle_writable;
                 push @results, @new_results;
-                if ( $socket_errno == ENOBUFS || $socket_errno == ENOMEM ) {
+
+                if (   defined $err
+                    && $err->isa( 'Zonemaster::Engine::Async::OsError' )
+                    && ( $err->errno == ENOBUFS || $err->errno == ENOMEM ) )
+                {
                     $is_exhausted = 1;
                 }
             }
-            if ( $readable->@* ) {
-                my ( $socket_errno, @new_results ) = $self->{_udp}->handle_readable;
+
+            for my $handle ( $readable->@* ) {
+                my $refaddr   = refaddr( $handle );
+                my $transport = $self->{_transports}{$refaddr};
+
+                my ( $err, @new_results ) = $transport->handle_readable;
 
                 for my $packet ( @new_results ) {
                     my $qid = $packet->id();
@@ -154,13 +180,18 @@ sub step {
                     push @results, $qid, $packet;
                 }
 
-                if ( $socket_errno == ENOBUFS || $socket_errno == ENOMEM ) {
-                    $is_exhausted = 1;
+                if ( defined $err ) {
+                    if ( $err->isa( 'Zonemaster::Engine::Async::OsError' )
+                        && ( $err->errno == ENOBUFS || $err->errno == ENOMEM ) )
+                    {
+                        $is_exhausted = 1;
+                    }
+                    else {
+                        $log->trace( 'handle_readable: recv->%s', $err );
+                    }
                 }
-                elsif ( $socket_errno != 0 ) {
-                    $log->trace( 'handle_readable: recv->%s', $socket_errno );
-                }
-            }
+            } ## end for my $handle ( $readable...)
+
             if ( $is_exhausted ) {
                 # TODO apply backpressure:
                 #  * set a deadline before which no file handles are to be
@@ -187,8 +218,15 @@ sub step {
 
     for my $qid ( @expired ) {
         delete $self->{_deadlines}{$qid};
-        $self->{_udp}->cancel( $qid );
-        push @results, ( $qid, Zonemaster::Engine::Async::Error->from_timeout( $TRANSIENT_KIND, 'request' ) );
+
+        push @results, ( $qid, Zonemaster::Engine::Async::TimeoutError->new );
+
+        # We're tracking which deadline are associated with which transports, so just try
+        # to cancel the exchange in all the transports. Since the QID is unique across all
+        # transports, there's no risk for colleteral damage.
+        for my $transport ( values $self->{_transports}->%* ) {
+            $transport->cancel( $qid );
+        }
     }
 
     return @results;
@@ -227,7 +265,21 @@ sub _default_select_fn {
 }
 
 sub _default_transport_factory {
-    return Zonemaster::Engine::Async::UDPTransport->new();
+    my ( $peer_port, $peer_ip ) = @_;
+
+    my $socket = IO::Socket::INET->new(
+        Proto    => 'udp',
+        PeerHost => $peer_ip,
+        PeerPort => $peer_port,
+        Blocking => 0,
+    );
+
+    if ( $socket ) {
+        return Zonemaster::Engine::Async::UDPTransport->new( socket => $socket );
+    }
+    else {
+        return;
+    }
 }
 
 1;

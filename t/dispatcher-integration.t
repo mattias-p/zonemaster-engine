@@ -25,9 +25,15 @@ my $sut = My::Test::SessionAdapter->new(
         qid_allocator     => \&alloc_mock_token,
         select_fn         => \&select,
         transport_factory => sub {
-            return Zonemaster::Engine::Async::UDPTransport->new( peerport => $dnsport );
+            my $socket = IO::Socket::INET->new(
+                Proto    => 'udp',
+                PeerHost => '127.0.1.53',
+                PeerPort => $dnsport,
+                Blocking => 0,
+            ) or BAIL_OUT( "failed to construct socket: $!" );
+            return Zonemaster::Engine::Async::UDPTransport->new( socket => $socket );
         },
-    )
+    ),
 );
 
 test_consumes_tokens [1] => sub {
