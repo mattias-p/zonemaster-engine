@@ -3,7 +3,6 @@ use v5.26;
 use warnings;
 
 use Exporter                   qw( import );
-use List::Util                 qw( pairmap );
 use My::Test::Msg              qw( $Msg );
 use My::Test::TokenAllocator   qw( $Uint16 );
 use My::Test::Util             qw( describe );
@@ -108,7 +107,11 @@ sub test_step {
 
     my @events = $self->{_inner}->step();
 
-    @events = pairmap { { token => $a, event => My::Test::Msg->try_from_packet( $b ) } } @events;
+    @events = map {
+        ( $_->{variant} eq 'task_ok' )    #
+          ? My::Test::Msg->try_from_packet( $_->{message} )
+          : $_
+    } @events;
 
     my $call     = sprintf( "%s.step%s", $self->{_name}, describe( $named{args} ) );
     my $got      = describe( { events => \@events } );

@@ -9,8 +9,18 @@ our @EXPORT_OK = qw(
   describe
 );
 
+=head2 describe
+
+Stringify a hierarchical data structure.
+
+Nodes are stringified using a L<Data::Dumper>-like syntax, with a 1000 character maximum
+line-width. For nodes that support the C<short> method, that method is called to provide a
+stand-in for the node itself.
+
+=cut
+
 sub describe {
-    my ( $hash ) = @_;
+    my ( $data ) = @_;
 
     my $filter = sub {
         my ( $ctx, $objref ) = @_;
@@ -22,6 +32,7 @@ sub describe {
 
     local $Data::Dump::LINEWIDTH = 1000;
 
-    return dump_filtered( $hash, $filter );
+    return dump_filtered( $data, $filter );
 }
 
+1;

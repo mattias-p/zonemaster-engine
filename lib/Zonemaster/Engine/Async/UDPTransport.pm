@@ -360,55 +360,52 @@ sub handle_readable {
             redo;
         }
 
-        my $qid      = unpack( 'n', $buffer );
+        my ( $qid, $flags, $qdcount ) = unpack( 'n n n', $buffer );
+        my $qr = $flags >> 15;
+        if ( $qr == 0 ) {
+            $log->trace( 'handle_readable: QR=0; retry' );
+            redo;
+        }
+        if ( $qdcount != 1 ) {
+            $log->tracef( 'handle_readable: QDCOUNT=%d; retry', $qdcount );
+            redo;
+        }
+        my ( $qname, $offset ) = wire2name( substr( $buffer, 12 ) );
+        if ( !defined $qname ) {
+            $log->tracef( 'handle_readable: QNAME parse error; retry', $qdcount );
+        }
+        if ( length( $buffer ) < 12 + $offset + 4 ) {
+            $log->trace( 'handle_readable: incomplete question; retry' );
+            redo;
+        }
+        my ( $qtype, $qclass ) = unpack( 'n n', substr( $buffer, 12 + $offset ) );
+
         my $question = $self->{_active}{$qid};
         if ( !$question ) {
             $log->trace( 'handle_readable: no matching QID; retry' );
             redo;
         }
+        my ( $exp_qname, $exp_qtype, $exp_qclass ) = $question->@*;
 
-        my ( $qname, $qtype, $qclass ) = $question->@*;
+        $log->tracef( 'handle_readable: offset=%d qtype=%04x qclass=%04x', $offset,    $qtype,     $qclass );
+        $log->tracef( 'handle_readable: qname=%s  qtype=%s qclass=%s',     $exp_qname, $exp_qtype, $exp_qclass );
+        #my @bytes = unpack( 'C*', $buffer );
+        #$log->tracef( 'handle_readable: message: %s', join( ' ', map { sprintf( '%02x', $_ ) } @bytes ) );
 
-        my ( $status, $packet ) = Zonemaster::LDNS::Packet->new_from_wireformat2( $buffer );
-
-        if ( $status->is_internal_err ) {
-            croak "parsing packet using ldns: $status";
-        }
-        elsif ( $status->is_mem_err ) {
-            $socket_err = Zonemaster::Engine::Async::LdnsError->new( $status );
-            last;
-        }
-        elsif ( !$status->is_ok ) {
-            $log->tracef( 'handle_readable: parse error: %s', $status->message );
-            redo;
-        }
-
-        $packet->answerfrom( $self->{_socket}->peerhost() );
-
-        if ( !$packet->qr() ) {
-            $log->trace( 'handle_readable: QR=0; retry' );
-            redo;
-        }
-
-        my @question_rrs = $packet->question();
-        if ( @question_rrs != 1 ) {
-            $log->tracef( 'handle_readable: QDCOUNT=%d; retry', scalar @question_rrs );
-            redo;
-        }
-        if ( $question_rrs[0]->type() ne $qtype ) {
+        if ( $qtype != $exp_qtype ) {
             $log->trace( 'handle_readable: QTYPE mismatch; retry' );
             redo;
         }
-        if ( $question_rrs[0]->class() ne $qclass ) {
+        if ( $qclass != $exp_qclass ) {
             $log->trace( 'handle_readable: QCLASS mismatch; retry' );
             redo;
         }
-        if ( lc( $question_rrs[0]->name() ) ne lc( $qname ) ) {
+        if ( lc( $qname ) ne lc( $exp_qname ) ) {
             $log->trace( 'handle_readable: QNAME mismatch; retry' );
             redo;
         }
 
-        push @responses, $packet;
+        push @responses, $buffer;
 
         delete $self->{_active}{$qid};
     } ## end while ( $self->{_active}->...)
@@ -451,5 +448,45 @@ queries for this instance.
 =back
 
 =cut
+
+=head2 wire2name
+
+Parse a domain name in wire-format.
+
+All labels must consist of LDH + underscore characters.
+
+Returns FQDN on success, or undef on failure.
+
+=cut
+
+sub wire2name {
+    my ( $buffer ) = @_;
+
+    my $ubound =
+        length( $buffer ) < 255
+      ? length( $buffer )
+      : 255;
+
+    for ( my $i = 0, my $name = '' ; ; ) {
+        my $len = ord( substr( $buffer, $i, 1 ) );
+        if ( $len > 63 || $i + 1 + $len > $ubound ) {
+            return;
+        }
+
+        if ( $len == 0 ) {
+            $name =~ s{[.]$}{};    # remove trailing dot
+            $name =~ s{^$}{.};     # add dot for root
+            return ( $name, $i + 1 );
+        }
+
+        my $label = substr( $buffer, $i + 1, $len );
+        $label =~ s{([\\.])}{\\$1}ge;                                 # escape backslash and dot
+        $label =~ s{([^\x21-\x7E])}{sprintf('\\%03o', ord($1))}ge;    # oct-encode non-printable ASCII
+
+        $name .= $label . '.';
+
+        $i += 1 + $len;
+    } ## end for ( my $i = 0, my $name...)
+} ## end sub wire2name
 
 1;

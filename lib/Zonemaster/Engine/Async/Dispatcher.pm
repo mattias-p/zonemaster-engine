@@ -4,7 +4,7 @@ use warnings;
 
 use Carp qw( croak );
 use English;
-use Errno qw( EINTR ENOBUFS ENOMEM ETIMEDOUT );
+use Errno qw( EAGAIN EINTR ENOBUFS ENOMEM EWOULDBLOCK );
 use IO::Select;
 use IO::Socket::INET;
 use List::Util qw( max min pairmap );
@@ -14,10 +14,39 @@ use Scalar::Util qw( refaddr );
 use Time::HiRes  qw( clock_gettime CLOCK_MONOTONIC );
 
 use Zonemaster::Engine::Async qw( errno_names );
-use Zonemaster::Engine::Async::TimeoutError;
+use Zonemaster::Engine::Async::DispatcherResult;
 use Zonemaster::Engine::Async::UDPTransport;
 
 with 'Zonemaster::Engine::Async::SessionRole';
+
+=pod
+    Ok value:packet scope:task
+    Err origin:ldns scope:task
+    Err origin:os   scope:socket
+
+    handle_writable
+      socket:
+        OsError  EINTR/EAGAIN/EWOULDBLOCK/ENOBUFS/ENOMEM
+            no-progress         - ignore
+            resource-exhaustion - destination/write
+      task:
+        OsError !EINTR/EAGAIN/EWOULDBLOCK/ENOBUFS/ENOMEM/EBADF/ENOTSOCK/EFAULT/EDESTADDRREQ/EISCONN
+            fail-task           - fail-task
+
+    handle_readable
+      socket:
+        LdnsError MEM_ERR
+            resource-exhaustion - destination/read
+        OsError !EBADF/ENOTSOCK/EINVAL/EFAULT
+            no-progress         - ignore
+            resource-exhaustion - destination/read
+            fail-destination    - destination/read
+            fail-socket         - destination/read
+
+    set_dest_suppression(dest, (read|write)*) -> ()
+    drain_dest(dest)                          -> [query]
+    drop_dest(dest)                           -> [query]
+=cut
 
 sub new {
     my ( $class, %args ) = @_;
@@ -147,9 +176,9 @@ sub step {
 
     my @results;
     do {
-        my $now_mono     = $self->_now_mono;
-        my $timeout      = max 0, $earliest_deadline - $now_mono;
-        my $is_exhausted = 0;
+        my $now_mono = $self->_now_mono;
+        my $timeout  = max 0, $earliest_deadline - $now_mono;
+
         $log->tracef( 'step: select %d %d 0 %fs', scalar $want_read->handles, scalar $want_write->handles, $timeout );
         local $ERRNO = 0;
         if ( my ( $readable, $writable, undef ) = $self->{_select_fn}( $want_read, $want_write, $timeout ) ) {
@@ -160,13 +189,24 @@ sub step {
                 my ( $err, @new_results ) = $transport->handle_writable;
                 push @results, @new_results;
 
-                if (   defined $err
-                    && $err->isa( 'Zonemaster::Engine::Async::OsError' )
-                    && ( $err->errno == ENOBUFS || $err->errno == ENOMEM ) )
-                {
-                    $is_exhausted = 1;
+                if ( defined $err ) {
+                    if ( $err->isa( 'Zonemaster::Engine::Async::OsError' )
+                        && ( $err->errno == ENOBUFS || $err->errno == ENOMEM ) )
+                    {
+                        push @results,
+                          Zonemaster::Engine::Async::DispatcherResult->write_error(
+                            proto => $transport->proto,
+                            addr  => $transport->peeraddr,
+                            error => $err,
+                          );
+                    }
+                    elsif ( $err->isa( 'Zonemaster::Engine::Async::OsError' )
+                        && ( $err->errno != EINTR && $err->errno != EAGAIN && $err->errno != EWOULDBLOCK ) )
+                    {
+                        $log->tracef( 'handle_writable: %s', $err );
+                    }
                 }
-            }
+            } ## end for my $handle ( $writable...)
 
             for my $handle ( $readable->@* ) {
                 my $refaddr   = refaddr( $handle );
@@ -174,31 +214,39 @@ sub step {
 
                 my ( $err, @new_results ) = $transport->handle_readable;
 
-                for my $packet ( @new_results ) {
-                    my $qid = $packet->id();
+                for my $message ( @new_results ) {
+                    my $qid = $message->id();
                     delete $self->{_deadlines}{$qid};
-                    push @results, $qid, $packet;
+                    push @results,
+                      Zonemaster::Engine::Async::DispatcherResult->task_ok(
+                        task_id => $qid,
+                        message => $message,
+                      );
                 }
 
                 if ( defined $err ) {
-                    if ( $err->isa( 'Zonemaster::Engine::Async::OsError' )
-                        && ( $err->errno == ENOBUFS || $err->errno == ENOMEM ) )
+                    if (
+                        (
+                            $err->isa( 'Zonemaster::Engine::Async::OsError' )
+                            && ( $err->errno == ENOBUFS || $err->errno == ENOMEM )
+                        )
+                        || $err->isa( 'Zonemaster::Engine::Async::LdnsError' )
+                      )
                     {
-                        $is_exhausted = 1;
+                        push @results,
+                          Zonemaster::Engine::Async::DispatcherResult->read_error(
+                            proto => $transport->proto,
+                            addr  => $transport->peeraddr,
+                            error => $err,
+                          );
                     }
-                    else {
-                        $log->trace( 'handle_readable: recv->%s', $err );
+                    elsif ( $err->isa( 'Zonemaster::Engine::Async::OsError' )
+                        && ( $err->errno != EINTR && $err->errno != EAGAIN && $err->errno != EWOULDBLOCK ) )
+                    {
+                        $log->tracef( 'handle_readable: %s', $err );
                     }
-                }
+                } ## end if ( defined $err )
             } ## end for my $handle ( $readable...)
-
-            if ( $is_exhausted ) {
-                # TODO apply backpressure:
-                #  * set a deadline before which no file handles are to be
-                #    included in the call to select().
-                #  * immediately time out tasks that time out before the deadline.
-                last;
-            }
         } ## end if ( my ( $readable, $writable...))
         elsif ( $!{EINTR} ) {
             $log->trace( 'step: EINTR' );
@@ -214,12 +262,12 @@ sub step {
     my $now_mono = $self->_now_mono;
     my @expired  = pairmap { $b <= $now_mono ? ( $a ) : () } $self->{_deadlines}->%*;
 
-    $log->tracef( 'step: %d results, %d expired', @results / 2, scalar @expired );
+    $log->tracef( 'step: %d results, %d expired', scalar @results, scalar @expired );
 
     for my $qid ( @expired ) {
         delete $self->{_deadlines}{$qid};
 
-        push @results, ( $qid, Zonemaster::Engine::Async::TimeoutError->new );
+        push @results, Zonemaster::Engine::Async::DispatcherResult->task_timeout( task_id => $qid );
 
         # We're tracking which deadline are associated with which transports, so just try
         # to cancel the exchange in all the transports. Since the QID is unique across all
