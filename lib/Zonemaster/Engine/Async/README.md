@@ -62,23 +62,23 @@ A type of outcome representing a DNS response.
 
 ### 4. Error and result model
 
-**Internal error / bug**
-A logic error or contract violation in the library itself. These are treated as bugs and
-typically handled by throwing exceptions (croak), not by returning them as normal error
-results.
+Any violations of contracts or invariants are signalled with `croak`. I.e., illegal calls
+into the `Zonemaster::Engine::Async` module, or bugs inside it.
+This indicates to the caller that the program is in an illegal state, and that the
+remaining tasks cannot be completed.
 
-**Error outcome**
-A type of outcome. A normalized description of a syscall-level error, or timeout.
+Each task produces a single event, representing the outcome of the task. The outcome is
+either a result or an error. A result event just means that the task was completed, e.g.,
+a matching DNS response was received. The only event a timeout task ever produces is a
+timeout error.
 
-**OS error**
-An error outcome representing an ERRNO returned by a syscall.
+Every task has a deadline. If the deadline expires before a result or error is produced in
+any other way, the task is completed with a timeout error.
 
-**Timeout error**
-An error outcome representing a missed deadline.
+In case a condition causes multiple tasks to fail, one error event is emitted for each
+affected task. E.g., a DNS server closes a TCP connection with outstanding exchanges.
 
-**EOF error**
-An error outcome representing TCP EOF at an unexpected time (for example, remote closed
-connection before a complete DNS message was read).
+Other error sources are syscalls, DNS message decoding and retry exhaustion.
 
 
 ### 5. Policy stack and layers
@@ -145,21 +145,27 @@ When caused by a connect or read operation, skip to the next socket.
 This operation will not be tried again until the next step.
 
 **Croak**
-Throw an exception indicating internal error.
+Throw an exception indicating an internal error or a contract violation.
 
 **Close**
 Close and drop the socket.
 Report all outstanding tasks for the socket as failed with the given ERRNO.
 
-## Policy layers only
+
+## Policy only
 
 **Delay**
-Must be accompanied with a secondary strategy.
+Must be configured with a sequence of delays and a criterium for when to enact it.
 
-First, enact a delay, then enact the secondary strategy.
-The same logical task may be delayed multiple times, possibly with different durations.
-If the delay would extend beyond the deadline for the logical task, it is instead reported
-as failed with the given ERRNO.
+When a layer employing the Delay strategy receives a new task, it stores the original
+deadline and propagates the new task downwards with a deadline computed from the first
+delay of the sequence.
+
+When the strategy is enacted, a timeout task is created for the remainder of the time
+until the previous deadline. If that deadline has already passed, a new request is
+submitted with a deadline computed from the next delay in the sequence. If that delay
+would extend beyond the deadline of the logical task, the last received error outcome is
+retagged with the logical task id and propagated to the caller.
 
 **Resubmit**
 Resubmit an identical request to the next inner layer.
