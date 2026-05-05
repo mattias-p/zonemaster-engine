@@ -3,12 +3,17 @@
 ### 1. Core entities
 
 **Multiplexing DNS client library**
-The library that accepts many DNS requests and timers, manages multiple sockets (UDP and
-TCP), and uses a single step-driven event loop to drive I/O and timers.
+It accepts DNS requests and timers, manages connected sockets (UDP and TCP), and uses a
+single step-driven event loop to drive I/O and timers.
 
 **Dispatcher**
-The multiplexing core of the library. It manages sockets and deadlines, readiness and
-waiting. It does not implement policy (retry, blacklist, rate limit, etc.).
+The dispatcher is the multiplexing core of the library. It manages sockets and deadlines,
+readiness and waiting. It does not implement policy (retry, blacklist, rate limit, etc.).
+
+If a deadline for a request expires in the dispatcher, the dispatcher cancels the exchange
+in the transport, and reports a timeout error for the request.
+
+The dispatcher creates and manages network handlers on demand.
 
 **Task**
 A generic unit of work. Either a logical DNS request or a timer.
@@ -51,13 +56,32 @@ The earliest outstanding deadline among all tasks; used to compute the timeout p
 
 ### 3. Network and sockets
 
-**Logical request**
-A type of task. A single DNS question from the caller (qname, qtype, qclass, plus options
-such as transport). Each logical request is bounded by a deadline determined by the
-dispatcher-configured request timeout an the time of the submission call.
+**Network handler**
+A network handler wraps a connected socket.
+It manages a set of DNS exchanges.
+It accepts DNS requests, an report DNS outcomes when polled.
+It also allows callers to cancel ongoing DNS exchanges, e.g., because a deadline has
+expired.
+The DNS requests must match the network handler by transport and address.
+
+
+**DNS exchange**
+An asynchronous activity performed by a transport stack.
+
+
+**DNS request**
+A type of task. It is represented by a (qname, qtype, qclass, transport, address)-tuple.
+
 
 **DNS outcome**
 A type of outcome representing a DNS response.
+
+
+### Transport stack
+
+The transport stack manages individual DNS exchanges.
+The caller requests exchanges, polls for results and may cancel ongoing exchanges.
+
 
 
 ### 4. Error and result model
@@ -71,9 +95,6 @@ Each task produces a single event, representing the outcome of the task. The out
 either a result or an error. A result event just means that the task was completed, e.g.,
 a matching DNS response was received. The only event a timeout task ever produces is a
 timeout error.
-
-Every task has a deadline. If the deadline expires before a result or error is produced in
-any other way, the task is completed with a timeout error.
 
 In case a condition causes multiple tasks to fail, one error event is emitted for each
 affected task. E.g., a DNS server closes a TCP connection with outstanding exchanges.
@@ -173,3 +194,23 @@ Resubmit an identical request to the next inner layer.
 **Block**
 Add (IP, transport) to the blacklist.
 Report the task as failed with the given ERRNO.
+
+
+
+
+
+Cache
+Blacklist
+
+TcTcpUpgrade
+    on dns response
+        if tc=1
+            set request.transport = tcp
+            resubmit
+        else
+            propagate
+
+Retry
+
+
+
